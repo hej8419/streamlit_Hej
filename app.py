@@ -353,34 +353,62 @@ def answer_form(stage, index, prompt, answer, meaning, korean_answer=False):
         st.rerun()
 
 
+def render_reading_sentence(number, english, korean, completed=0, first_blank=0, show_answers=False):
+    """Display a sentence with its blanks, Korean translation, and US audio."""
+    position = [first_blank]
+
+    def replace(match):
+        current = position[0]
+        position[0] += 1
+        if show_answers or current < completed:
+            return f"<b>{html.escape(match.group(1))}</b>"
+        return f'<span class="blank">[{current + 1}] ______</span>'
+
+    shown = re.sub(r"\{\{([A-Za-z-]+)\}\}", replace, html.escape(english))
+    st.markdown(
+        f'<div class="sentence"><div class="english"><b>{number}.</b> {shown}</div>'
+        f'<div class="translation">{html.escape(korean)}</div></div>',
+        unsafe_allow_html=True,
+    )
+    audio_player(full_sentence(english), "US", f"🇺🇸 {number}번 문장 발음 듣기")
+
+
 def reading_view(pack):
     passage = PASSAGES[st.session_state.level][st.session_state.passage_idx]
     sentences = passage["sentences"]
     targets = target_words(passage)
     idx = st.session_state.reading_idx
     st.subheader(f"✈️ 여행 독해 · {passage['title']}")
-    st.caption("영어 문장과 한국어 해석을 함께 보고, 각 문장 아래에서 미국식 발음을 들을 수 있습니다. 발음을 들으면 빈칸 정답도 들릴 수 있어요.")
-    st.progress(min(idx + 1, len(targets)) / len(targets), text=f"빈칸 {min(idx + 1, len(targets))}/{len(targets)}")
-    blank_index = 0
-    for number, (english, korean) in enumerate(sentences, 1):
-        def replace(match):
-            nonlocal blank_index
-            current = blank_index
-            blank_index += 1
-            if current < idx:
-                return f"<b>{html.escape(match.group(1))}</b>"
-            return f'<span class="blank">[{current + 1}] ______</span>'
-        shown = re.sub(r"\{\{([A-Za-z-]+)\}\}", replace, html.escape(english))
-        st.markdown(f'<div class="sentence"><div class="english"><b>{number}.</b> {shown}</div><div class="translation">{html.escape(korean)}</div></div>', unsafe_allow_html=True)
-        audio_player(full_sentence(english), "US", f"🇺🇸 {number}번 문장 발음 듣기")
-    if idx == len(targets):
-        st.success("🎉 모든 빈칸을 완성했습니다!")
-        if st.button("오답 복습하기", type="primary"):
-            navigate("Review")
+    st.caption("문장을 하나씩 읽고 해당 문장의 빈칸을 채워 보세요. 문장별 한국어 해석과 미국식 발음을 제공합니다. 발음을 들으면 정답이 들릴 수 있어요.")
+
+    if idx < len(targets):
+        st.progress((idx + 1) / len(targets), text=f"빈칸 {idx + 1}/{len(targets)}")
+        # Find the sentence containing the current blank. Multiple blanks in
+        # one sentence are answered consecutively before advancing.
+        first_blank = 0
+        for number, (english, korean) in enumerate(sentences, 1):
+            sentence_count = len(re.findall(r"\{\{([A-Za-z-]+)\}\}", english))
+            if first_blank <= idx < first_blank + sentence_count:
+                st.caption(f"문장 {number} / {len(sentences)}")
+                render_reading_sentence(number, english, korean, idx, first_blank)
+                break
+            first_blank += sentence_count
+        answer = targets[idx]
+        item = next(x for x in pack if norm(x["word"]) == norm(answer))
+        answer_form("reading", idx, f"**[{idx + 1}] 이 문장의 빈칸에 들어갈 영어 단어는?**", answer, item["meaning"])
         return
-    answer = targets[idx]
-    item = next(x for x in pack if norm(x["word"]) == norm(answer))
-    answer_form("reading", idx, f"**[{idx + 1}] 빈칸에 들어갈 영어 단어는?**", answer, item["meaning"])
+
+    # Completed reading: show the ENTIRE passage with blanks again, before Review.
+    st.success("🎉 모든 문장의 빈칸을 완성했어요!")
+    st.subheader("📖 전체 여행 지문 다시 보기")
+    st.caption("전체 지문과 한국어 해석을 확인하세요. 처음에는 빈칸으로 표시되고, 정답 보기로 전환할 수 있어요.")
+    show_answers = st.checkbox("전체 지문 정답 보기", key="reading_full_answers")
+    first_blank = 0
+    for number, (english, korean) in enumerate(sentences, 1):
+        render_reading_sentence(number, english, korean, 0, first_blank, show_answers)
+        first_blank += len(re.findall(r"\{\{([A-Za-z-]+)\}\}", english))
+    if st.button("🔁 오답 Review로 이동 →", type="primary", use_container_width=True):
+        navigate("Review")
 
 
 def review_view(pack):
