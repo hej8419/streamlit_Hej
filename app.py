@@ -55,7 +55,7 @@ RELATED = {
     "compensate": (["reimburse"], []),
 }
 
-# 각 문장은 (영어, 한국어) 형태입니다. {{word}}는 플래시카드 및 빈칸 문제로 연결됩니다.
+# 각 문장은 (영어, 한국어) 형태입니다. {{word}}는 목표 어휘 및 빈칸 문제로 연결됩니다.
 # 해당 수준의 vocabulary.csv에 실제 존재하는 단어만 목표 어휘로 사용합니다.
 PASSAGES = {
     "Elementary": [
@@ -198,28 +198,46 @@ def full_sentence(sentence):
     return re.sub(r"\{\{([A-Za-z-]+)\}\}", lambda m: m.group(1), sentence)
 
 
-def initialize_pack(df, level, passage_idx):
+def initialize_pack(df, level):
+    """Choose 20 words from the full CSV level, independently of Reading."""
+    pool = df[df["Level"] == level].drop_duplicates(subset=["Word"])
+    if len(pool) < 20:
+        raise ValueError("선택한 수준의 단어가 20개 미만입니다.")
+    selected = pool.sample(n=20)
+    items = [
+        {"word": row["Word"], "meaning": row["Korean meaning (뜻)"]}
+        for _, row in selected.iterrows()
+    ]
+    st.session_state.update(
+        pack=items, level=level, phase="Flashcards",
+        card_idx=0, revealed=False,
+        quiz_idx=0, quiz_tries=0, quiz_done=False, quiz_results={},
+        spelling_idx=0, spelling_tries=0, spelling_done=False, spelling_results={},
+        input_version=st.session_state.get("input_version", 0) + 1,
+    )
+
+
+def initialize_reading(df, level, passage_idx):
+    """Create a separate Reading session using curated words in the CSV."""
     passage = PASSAGES[level][passage_idx]
     targets = target_words(passage)
     if len(targets) != TARGET_COUNTS[level] or len(set(targets)) != len(targets):
         raise ValueError("지문의 목표 어휘 개수 또는 중복 설정이 올바르지 않습니다.")
     pool = df[df["Level"] == level].copy()
     pool["_key"] = pool["Word"].str.strip().str.casefold()
-    items = []
+    reading_items = []
     for word in targets:
         matched = pool[pool["_key"] == word.casefold()]
         if matched.empty:
             raise ValueError(f"{LABELS[level]} CSV에서 '{word}'를 찾을 수 없습니다.")
         row = matched.iloc[0]
-        items.append({"word": row["Word"], "meaning": row["Korean meaning (뜻)"]})
-    random.shuffle(items)
+        reading_items.append({"word": row["Word"], "meaning": row["Korean meaning (뜻)"], "level": level})
     st.session_state.update(
-        pack=items, level=level, passage_idx=passage_idx, phase="Flashcards",
-        card_idx=0, revealed=False,
-        quiz_idx=0, quiz_tries=0, quiz_done=False, quiz_results={},
-        spelling_idx=0, spelling_tries=0, spelling_done=False, spelling_results={},
+        reading_items=reading_items, reading_level=level, reading_passage_idx=passage_idx,
         reading_idx=0, reading_tries=0, reading_done=False, reading_results={},
+        reading_full_answers=False,
         input_version=st.session_state.get("input_version", 0) + 1,
+        phase="Reading",
     )
 
 
@@ -374,7 +392,7 @@ def render_reading_sentence(number, english, korean, completed=0, first_blank=0,
 
 
 def reading_view(pack):
-    passage = PASSAGES[st.session_state.level][st.session_state.passage_idx]
+    passage = PASSAGES[st.session_state.reading_level][st.session_state.reading_passage_idx]
     sentences = passage["sentences"]
     targets = target_words(passage)
     idx = st.session_state.reading_idx
@@ -394,7 +412,7 @@ def reading_view(pack):
                 break
             first_blank += sentence_count
         answer = targets[idx]
-        item = next(x for x in pack if norm(x["word"]) == norm(answer))
+        item = next(x for x in st.session_state.reading_items if norm(x["word"]) == norm(answer))
         answer_form("reading", idx, f"**[{idx + 1}] 이 문장의 빈칸에 들어갈 영어 단어는?**", answer, item["meaning"])
         return
 
@@ -414,20 +432,23 @@ def reading_view(pack):
 def review_view(pack):
     st.subheader("🔁 오답 복습")
     wrong = {}
-    targets = target_words(PASSAGES[st.session_state.level][st.session_state.passage_idx])
-    for stage in ("quiz", "spelling", "reading"):
-        for idx, result in st.session_state[f"{stage}_results"].items():
-            if result["mistakes"] > 0:
-                word = targets[idx] if stage == "reading" else pack[idx]["word"]
-                wrong.setdefault(norm(word), set()).add(stage)
+    for stage in ("quiz", "spelling"):
+        for idx, result in st.session_state.get(f"{stage}_results", {}).items():
+            if result["mistakes"] > 0 and idx < len(pack):
+                item = pack[idx]
+                wrong.setdefault(norm(item["word"]), {**item, "stages": set()})["stages"].add(stage)
+    for idx, result in st.session_state.get("reading_results", {}).items():
+        reading_items = st.session_state.get("reading_items", [])
+        if result["mistakes"] > 0 and idx < len(reading_items):
+            item = reading_items[idx]
+            wrong.setdefault(norm(item["word"]), {**item, "stages": set()})["stages"].add("reading")
     if not wrong:
         st.success("지금까지 틀린 단어가 없어요!")
     else:
         st.metric("복습할 단어", len(wrong))
-        for word, stages in wrong.items():
-            item = next(x for x in pack if norm(x["word"]) == word)
+        for item in wrong.values():
             st.markdown(f"**{item['word']}** — {item['meaning']}")
-            st.caption("오답 단계: " + ", ".join(sorted(stages)))
+            st.caption("오답 단계: " + ", ".join(sorted(item["stages"])))
             related(item["word"])
             st.divider()
     if st.button("Flashcards로 돌아가기"):
@@ -445,11 +466,13 @@ if "pack" not in st.session_state:
     st.session_state.pack = []
 if "show_diag" not in st.session_state:
     st.session_state.show_diag = False
+if "reading_items" not in st.session_state:
+    st.session_state.reading_items = []
 
 with st.sidebar:
     st.header("내 학습 현황")
     st.write("현재 수준:", LABELS.get(st.session_state.get("level"), "미선택"))
-    st.write("현재 단어:", len(st.session_state.pack), "개")
+    st.write("현재 랜덤 학습 단어:", len(st.session_state.pack), "개")
     if st.button("🧭 수준 진단"):
         st.session_state.show_diag = True
         st.rerun()
@@ -463,28 +486,45 @@ if st.session_state.show_diag:
 
 level_label = st.selectbox("🎓 학습 수준", list(LEVELS), key="level_select")
 selected_level = LEVELS[level_label]
-passage_names = [p["title"] for p in PASSAGES[selected_level]]
-passage_name = st.selectbox("✈️ 여행 지문 선택", passage_names)
-selected_passage_idx = passage_names.index(passage_name)
-passage = PASSAGES[selected_level][selected_passage_idx]
-st.caption(f"{level_label}: 플래시카드 {TARGET_COUNTS[selected_level]}개 · 빈칸 {TARGET_COUNTS[selected_level]}개 · 지문 {len(passage['sentences'])}문장")
-if st.button("🎲 선택한 여행 지문으로 학습 시작", type="primary", use_container_width=True):
+
+st.subheader("📚 단어 학습 — 전체 3,000개 단어 활용")
+st.caption("초등 800개 · 중·고등 1,200개 · 확장 1,000개. 선택한 수준에서 20개를 무작위로 뽑습니다.")
+if st.button("🎲 랜덤 20개 단어로 새 학습 시작", type="primary", use_container_width=True):
     try:
-        initialize_pack(words_df, selected_level, selected_passage_idx)
+        initialize_pack(words_df, selected_level)
         st.rerun()
     except ValueError as exc:
         st.error(str(exc))
 
-if not st.session_state.pack:
-    st.info("수준과 여행 지문을 선택한 후 학습 시작 버튼을 눌러 주세요.")
-    st.stop()
+st.divider()
+st.subheader("✈️ 여행 독해 — 별도 학습")
+st.caption("여행 지문의 빈칸은 3,000개 CSV에서 수준별로 선정한 단어입니다. 랜덤 플래시카드 20개와는 별개입니다.")
+passage_names = [p["title"] for p in PASSAGES[selected_level]]
+passage_name = st.selectbox("여행 지문 선택", passage_names)
+selected_passage_idx = passage_names.index(passage_name)
+passage = PASSAGES[selected_level][selected_passage_idx]
+st.caption(f"{level_label}: 빈칸 {TARGET_COUNTS[selected_level]}개 · 지문 {len(passage['sentences'])}문장")
+if st.button("✈️ 선택한 여행 지문 학습 시작", use_container_width=True):
+    try:
+        initialize_reading(words_df, selected_level, selected_passage_idx)
+        st.rerun()
+    except ValueError as exc:
+        st.error(str(exc))
 
 pack = st.session_state.pack
 count = len(pack)
-if selected_level != st.session_state.level or selected_passage_idx != st.session_state.passage_idx:
-    st.warning("선택한 수준 또는 지문이 현재 학습 내용과 다릅니다. 새로 시작하려면 위 버튼을 눌러 주세요.")
+if not pack and not st.session_state.get("reading_items"):
+    st.info("랜덤 단어 학습 또는 여행 독해 중 원하는 활동을 시작해 주세요.")
+    st.stop()
 
-phase = st.radio("학습 단계", ["Flashcards", "Quiz", "Spelling", "Reading", "Review"], horizontal=True, key="phase")
+available_phases = ["Flashcards", "Quiz", "Spelling", "Reading", "Review"]
+if not pack:
+    available_phases = ["Reading", "Review"]
+if not st.session_state.get("reading_items"):
+    available_phases = [x for x in available_phases if x != "Reading"]
+if st.session_state.get("phase") not in available_phases:
+    st.session_state.phase = available_phases[0]
+phase = st.radio("학습 단계", available_phases, horizontal=True, key="phase")
 
 if phase == "Flashcards":
     idx = st.session_state.card_idx
@@ -517,8 +557,9 @@ if phase == "Flashcards":
             st.session_state.card_idx += 1
             st.session_state.revealed = False
             st.rerun()
-    if st.button("✈️ 여행 지문 풀기", type="primary", use_container_width=True):
-        navigate("Reading")
+    if st.session_state.get("reading_items"):
+        if st.button("✈️ 여행 지문 풀기", type="primary", use_container_width=True):
+            navigate("Reading")
 
 elif phase == "Quiz":
     idx = st.session_state.quiz_idx
