@@ -3,6 +3,9 @@
 Run: streamlit run app.py
 """
 import html
+import io
+import requests
+from gtts import gTTS
 import random
 import re
 import unicodedata
@@ -124,19 +127,133 @@ def is_correct(answer, item, direction):
     return clean(answer) == clean(item["word"])
 
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def dictionary_relations(word):
+    """Optional public dictionary enrichment; unavailable data is never invented."""
+    try:
+        response = requests.get(
+            "https://api.dictionaryapi.dev/api/v2/entries/en/" + requests.utils.quote(word),
+            timeout=4,
+        )
+        response.raise_for_status()
+        syn, ant = [], []
+        for entry in response.json() if isinstance(response.json(), list) else []:
+            for meaning in entry.get("meanings", []):
+                syn.extend(meaning.get("synonyms", []))
+                ant.extend(meaning.get("antonyms", []))
+                for definition in meaning.get("definitions", []):
+                    syn.extend(definition.get("synonyms", []))
+                    ant.extend(definition.get("antonyms", []))
+        return list(dict.fromkeys(syn))[:6], list(dict.fromkeys(ant))[:6]
+    except (requests.RequestException, ValueError, TypeError, AttributeError):
+        return [], []
+
+
 def relation_block(word):
-    """Show related vocabulary visibly, with an honest fallback."""
-    syn, ant = RELATIONS.get(word.lower().strip(), ([], []))
+    original_syn, original_ant = RELATIONS.get(word.lower().strip(), ([], []))
+    extra_syn, extra_ant = dictionary_relations(word)
+    synonyms = list(dict.fromkeys(original_syn + extra_syn))[:6]
+    antonyms = list(dict.fromkeys(original_ant + extra_ant))[:6]
     st.markdown("**🔎 유의어 · 반의어 (Synonyms & Antonyms)**")
-    if syn:
-        st.write("**유의어:** " + ", ".join(syn))
-    else:
-        st.caption("유의어: 등록된 정보 없음")
-    if ant:
-        st.write("**반의어:** " + ", ".join(ant))
-    else:
-        st.caption("반의어: 등록된 정보 없음")
-    st.caption("원본 CSV에는 유의어·반의어가 없어 일부 단어만 별도 제공됩니다. 문맥에 따라 의미가 달라질 수 있습니다.")
+    st.write("**유의어:** " + ", ".join(synonyms) if synonyms else "유의어: 확인된 정보 없음")
+    st.write("**반의어:** " + ", ".join(antonyms) if antonyms else "반의어: 확인된 정보 없음")
+    st.caption("공개 사전 API와 일부 수동 등록 자료를 활용합니다. 문맥에 따라 의미가 다를 수 있으며, 인터넷 연결에 따라 검색 결과가 달라질 수 있습니다.")
+
+
+@st.cache_data(show_spinner=False, max_entries=250)
+def pronunciation_audio(word, accent):
+    output = io.BytesIO()
+    gTTS(text=word, lang="en", tld="com" if accent == "us" else "co.uk").write_to_fp(output)
+    return output.getvalue()
+
+
+def pronunciation_block(word):
+    st.markdown("**🔊 발음 듣기**")
+    left, right = st.columns(2)
+    for column, accent, label in [(left, "us", "🇺🇸 미국식"), (right, "uk", "🇬🇧 영국식")]:
+        with column:
+            try:
+                audio = pronunciation_audio(word, accent)
+                st.caption(label)
+                st.audio(audio, format="audio/mp3")
+            except Exception:
+                st.caption(f"{label}: 현재 음성을 불러올 수 없습니다.")
+
+
+def start_diagnostic(data):
+    # 5 questions per source category; multiple choice is a screening tool, not a certified test.
+    selected = []
+    for level in LEVELS.values():
+        pool = data[data["Level"] == level]
+        selected.extend(pool.sample(n=min(5, len(pool))).to_dict("records"))
+    random.shuffle(selected)
+    all_meanings = data["Korean meaning (뜻)"].drop_duplicates().tolist()
+    questions = []
+    for item in selected:
+        answer = item["Korean meaning (뜻)"]
+        wrong = random.sample([m for m in all_meanings if m != answer], 3)
+        options = wrong + [answer]
+        random.shuffle(options)
+        questions.append({"word": item["Word"], "level": item["Level"], "answer": answer, "options": options})
+    st.session_state.diagnostic_questions = questions
+    st.session_state.diagnostic_answers = {}
+    st.session_state.diagnostic_idx = 0
+    st.session_state.diagnostic_done = False
+
+
+def diagnostic_view(data):
+    st.subheader("🎓 어휘 수준 진단")
+    st.caption("초급·중급·고급 단어 각 5문항, 총 15문항입니다. 공식적인 영어 능력 평가가 아닌 학습 수준 추천용입니다.")
+    if "diagnostic_questions" not in st.session_state:
+        if st.button("📝 15문항 수준 진단 시작", type="primary", use_container_width=True):
+            start_diagnostic(data)
+            st.rerun()
+        return
+    questions = st.session_state.diagnostic_questions
+    answers = st.session_state.diagnostic_answers
+    if st.session_state.diagnostic_done:
+        scores = {level: [0, 0] for level in LEVELS.values()}
+        for i, question in enumerate(questions):
+            scores[question["level"]][1] += 1
+            if answers.get(i) == question["answer"]:
+                scores[question["level"]][0] += 1
+        total = sum(score[0] for score in scores.values())
+        st.metric("진단 정답", f"{total} / {len(questions)}")
+        for level, (correct, count) in scores.items():
+            st.write(f"{level}: {correct} / {count}")
+        if scores["Extended"][0] >= 3 and scores["MidHigh"][0] >= 3:
+            suggested = "Extended"
+        elif scores["MidHigh"][0] >= 3 or (scores["Elementary"][0] >= 4 and scores["MidHigh"][0] >= 2):
+            suggested = "MidHigh"
+        else:
+            suggested = "Elementary"
+        label = next(k for k, v in LEVELS.items() if v == suggested)
+        st.success(f"추천 학습 수준: {label}")
+        if st.button("📚 추천 수준으로 20개 단어 시작", type="primary", use_container_width=True):
+            new_pack(data, suggested)
+            st.session_state["level_choice"] = label
+            st.rerun()
+        if st.button("진단 다시 하기", use_container_width=True):
+            start_diagnostic(data)
+            st.rerun()
+        return
+    idx = st.session_state.diagnostic_idx
+    q = questions[idx]
+    st.progress((idx + 1) / len(questions), text=f"진단 {idx + 1} / {len(questions)}")
+    st.markdown(f'<div class="wp-card"><div class="wp-word">{html.escape(q["word"])}</div><p>올바른 한국어 뜻을 고르세요.</p></div>', unsafe_allow_html=True)
+    with st.form(f"diagnostic_{idx}"):
+        choice = st.radio("정답 선택", q["options"], index=None)
+        submitted = st.form_submit_button("다음 문제 →" if idx < len(questions)-1 else "진단 결과 확인", type="primary", use_container_width=True)
+    if submitted:
+        if choice is None:
+            st.warning("답을 선택해 주세요.")
+        else:
+            st.session_state.diagnostic_answers[idx] = choice
+            if idx == len(questions)-1:
+                st.session_state.diagnostic_done = True
+            else:
+                st.session_state.diagnostic_idx += 1
+            st.rerun()
 
 
 def new_pack(data, level):
@@ -182,7 +299,7 @@ if "pack" not in st.session_state:
     st.session_state.pack = []
     st.session_state.phase = "Flashcards"
 
-level_label = st.selectbox("🎓 학습 수준 선택", list(LEVELS), index=1)
+level_label = st.selectbox("🎓 학습 수준 선택", list(LEVELS), index=1, key="level_choice")
 selected_level = LEVELS[level_label]
 level_count = int((words["Level"] == selected_level).sum())
 st.caption(f"전체 데이터 {len(words):,}개 · 선택한 수준 {level_count:,}개 · 한 묶음 20개")
@@ -197,6 +314,9 @@ with right:
         st.caption("현재 묶음: " + {"Elementary": "초등", "MidHigh": "중등", "Extended": "고등"}.get(st.session_state.pack_level, st.session_state.pack_level))
     else:
         st.caption("시작 버튼을 눌러 학습하세요.")
+
+with st.expander("🎯 내 어휘 수준 진단하기", expanded=not bool(st.session_state.pack)):
+    diagnostic_view(words)
 
 if not st.session_state.pack:
     st.info("난이도를 선택하고 ‘새로운 20개 단어 시작’을 눌러 주세요.")
@@ -214,6 +334,7 @@ if phase == "Flashcards":
     st.progress((idx + 1) / len(pack), text=f"Flashcard {idx + 1} / {len(pack)}")
     if st.session_state.card_revealed:
         st.markdown(f'<div class="wp-card"><div class="wp-word">{html.escape(item["word"])}</div><hr><div class="wp-meaning">{html.escape(item["meaning"])}</div></div>', unsafe_allow_html=True)
+        pronunciation_block(item["word"])
         relation_block(item["word"])
     else:
         st.markdown(f'<div class="wp-card"><div class="wp-word">{html.escape(item["word"])}</div><p>뜻을 생각한 후 정답을 확인하세요.</p></div>', unsafe_allow_html=True)
