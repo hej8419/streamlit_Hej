@@ -1,11 +1,10 @@
 
-"""Word Passport — single-page Streamlit vocabulary app.
+"""Word Passport — level-adapted travel vocabulary and reading.
 Run: streamlit run app.py
+Required files: app.py, vocabulary.csv, requirements.txt
 """
 import html
 import io
-import requests
-from gtts import gTTS
 import random
 import re
 import unicodedata
@@ -13,508 +12,517 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+from gtts import gTTS
 
-st.set_page_config(page_title="Word Passport | Vocabulary", page_icon="📚", layout="centered", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Word Passport", page_icon="📚", layout="centered")
 
-# Original CSV categories. These school-level names are an app design choice,
-# not an official claim about the source document's school-level classification.
-LEVELS = {
-    "초등학교 · Elementary": "Elementary",
-    "중학교 · MidHigh": "MidHigh",
-    "고등학교 · Extended": "Extended",
-}
-# Hand-reviewed illustrative relationships. Unlisted words show no relationship.
-# Related words are enrichment, not an automatically inferred CSV field.
-RELATIONS = {
-    "abandon": (["leave", "desert"], ["keep", "retain"]),
-    "able": (["capable"], ["unable"]),
-    "accept": (["receive", "agree to"], ["reject", "refuse"]),
-    "active": (["energetic"], ["inactive", "passive"]),
-    "ancient": (["old", "historic"], ["modern", "recent"]),
-    "angry": (["mad", "furious"], ["calm", "pleased"]),
-    "answer": (["reply", "response"], []),
-    "beautiful": (["pretty", "lovely"], ["ugly"]),
-    "begin": (["start", "commence"], ["finish", "end"]),
-    "big": (["large", "huge"], ["small", "tiny"]),
-    "bright": (["shining", "luminous"], ["dim", "dark"]),
-    "calm": (["peaceful", "quiet"], ["agitated"]),
-    "careful": (["cautious"], ["careless"]),
-    "cheap": (["inexpensive"], ["expensive"]),
-    "clean": (["tidy"], ["dirty"]),
-    "close": (["shut"], ["open"]),
-    "cold": (["chilly", "cool"], ["hot", "warm"]),
-    "common": (["usual", "ordinary"], ["rare", "unusual"]),
-    "dangerous": (["risky", "unsafe"], ["safe"]),
-    "dark": (["dim"], ["bright", "light"]),
-    "difficult": (["hard", "challenging"], ["easy", "simple"]),
-    "early": (["ahead of time"], ["late"]),
-    "easy": (["simple"], ["difficult", "hard"]),
-    "empty": (["vacant"], ["full"]),
-    "fast": (["quick", "rapid"], ["slow"]),
-    "famous": (["well-known"], ["unknown", "obscure"]),
-    "friend": (["companion", "pal"], ["enemy"]),
+LEVELS = {"초등": "Elementary", "중·고등": "MidHigh", "확장": "Extended"}
+LABELS = {value: key for key, value in LEVELS.items()}
+TARGET_COUNTS = {"Elementary": 5, "MidHigh": 8, "Extended": 12}
+
+# 뜻이 일치하는지 검토한 항목만 보여 줍니다. 자동 사전 매칭을 하지 않습니다.
+RELATED = {
     "happy": (["glad", "joyful"], ["sad", "unhappy"]),
-    "high": (["tall", "elevated"], ["low"]),
-    "honest": (["truthful"], ["dishonest"]),
-    "hot": (["warm"], ["cold"]),
-    "important": (["significant", "major"], ["unimportant", "minor"]),
-    "increase": (["grow", "rise"], ["decrease", "reduce"]),
-    "kind": (["caring", "considerate"], ["cruel", "unkind"]),
-    "large": (["big", "huge"], ["small"]),
-    "late": (["delayed"], ["early"]),
-    "love": (["affection"], ["hate"]),
-    "new": (["recent", "fresh"], ["old"]),
-    "noisy": (["loud"], ["quiet"]),
-    "old": (["aged"], ["new", "young"]),
-    "poor": (["needy"], ["rich", "wealthy"]),
-    "quick": (["fast", "rapid"], ["slow"]),
-    "rich": (["wealthy"], ["poor"]),
-    "safe": (["secure"], ["dangerous", "unsafe"]),
-    "sad": (["unhappy", "sorrowful"], ["happy", "glad"]),
-    "short": (["brief"], ["long"]),
+    "sad": (["unhappy"], ["happy"]),
+    "big": (["large", "huge"], ["small"]),
+    "small": (["little", "tiny"], ["large", "big"]),
+    "fast": (["quick", "rapid"], ["slow"]),
     "slow": (["unhurried"], ["fast", "quick"]),
-    "small": (["little", "tiny"], ["big", "large"]),
+    "easy": (["simple"], ["difficult"]),
+    "difficult": (["hard", "challenging"], ["easy"]),
+    "begin": (["start"], ["finish", "end"]),
+    "start": (["begin"], ["finish", "end"]),
+    "safe": (["secure"], ["dangerous", "unsafe"]),
+    "dangerous": (["unsafe", "risky"], ["safe"]),
+    "early": (["ahead of time"], ["late"]),
+    "late": (["delayed"], ["early"]),
+    "rich": (["wealthy"], ["poor"]),
+    "poor": (["needy"], ["rich"]),
     "strong": (["powerful"], ["weak"]),
-    "success": (["achievement"], ["failure"]),
-    "true": (["correct", "accurate"], ["false"]),
     "weak": (["feeble"], ["strong"]),
-    "young": (["youthful"], ["old"]),
+    "arrive": (["reach"], ["depart", "leave"]),
+    "reserve": (["book"], ["cancel"]),
+    "recommend": (["suggest"], []),
+    "journey": (["trip"], []),
+    "delay": (["postpone"], []),
+    "confirm": (["verify"], []),
+    "adequate": (["sufficient"], ["inadequate"]),
+    "flexible": (["adaptable"], ["rigid"]),
+    "valid": (["acceptable"], ["invalid"]),
+    "negotiate": (["bargain"], []),
+    "diverse": (["varied"], ["uniform"]),
+    "anticipate": (["expect"], []),
+    "compensate": (["reimburse"], []),
+}
+
+# 각 문장은 (영어, 한국어) 형태입니다. {{word}}는 플래시카드 및 빈칸 문제로 연결됩니다.
+# 해당 수준의 vocabulary.csv에 실제 존재하는 단어만 목표 어휘로 사용합니다.
+PASSAGES = {
+    "Elementary": [
+        {"title": "공항으로 가는 길", "sentences": [
+            ("I have a {{ticket}} and a {{bag}}.", "나는 표와 가방을 가지고 있다."),
+            ("I take a {{bus}} with my mom.", "나는 엄마와 버스를 탄다."),
+            ("We look at a {{map}}.", "우리는 지도를 본다."),
+            ("We {{arrive}} early.", "우리는 일찍 도착한다."),
+        ]},
+        {"title": "바닷가 여행", "sentences": [
+            ("We go to the {{beach}}.", "우리는 해변에 간다."),
+            ("I bring some {{water}}.", "나는 물을 조금 가져간다."),
+            ("We play with a {{ball}}.", "우리는 공을 가지고 논다."),
+            ("I eat an {{apple}}.", "나는 사과를 먹는다."),
+            ("I take a {{picture}}.", "나는 사진을 찍는다."),
+        ]},
+        {"title": "기차 여행", "sentences": [
+            ("I buy a {{ticket}}.", "나는 표를 산다."),
+            ("I take the {{train}}.", "나는 기차를 탄다."),
+            ("I look out the {{window}}.", "나는 창밖을 본다."),
+            ("I {{visit}} my friend.", "나는 친구를 방문한다."),
+            ("We eat {{lunch}} together.", "우리는 함께 점심을 먹는다."),
+        ]},
+    ],
+    "MidHigh": [
+        {"title": "공항에서 생긴 일", "sentences": [
+            ("Our {{flight}} was delayed because of heavy rain.", "폭우 때문에 우리 비행기가 지연되었다."),
+            ("We waited at the {{airport}} for an update.", "우리는 새 소식을 기다리며 공항에 있었다."),
+            ("An employee explained the reason for the {{delay}}.", "직원이 지연 사유를 설명했다."),
+            ("She told us to check the new {{schedule}}.", "그녀는 새 일정을 확인하라고 말했다."),
+            ("Our boarding {{gate}} had also changed.", "탑승구도 바뀌었다."),
+            ("We needed to {{confirm}} the departure time.", "우리는 출발 시간을 확인해야 했다."),
+            ("A staff member helped us find the correct {{document}}.", "직원이 올바른 서류를 찾도록 도와주었다."),
+            ("We finally reached our {{hotel}} late at night.", "우리는 마침내 밤늦게 호텔에 도착했다."),
+        ]},
+        {"title": "호텔 체크인", "sentences": [
+            ("Before our trip, I called the {{hotel}}.", "여행 전에 나는 호텔에 전화했다."),
+            ("I wanted to {{reserve}} a room for two nights.", "나는 이틀 밤 묵을 객실을 예약하고 싶었다."),
+            ("The employee asked me to {{confirm}} my name.", "직원은 내 이름을 확인해 달라고 했다."),
+            ("She showed me the daily {{schedule}}.", "그녀는 일일 일정을 보여주었다."),
+            ("She also offered to {{recommend}} a restaurant.", "그녀는 식당을 추천해 주겠다고도 했다."),
+            ("We asked a {{local}} person for directions.", "우리는 현지인에게 길을 물었다."),
+            ("Our {{guide}} helped us explore the area.", "우리 안내원이 주변을 둘러보도록 도와주었다."),
+            ("It was a pleasant {{experience}}.", "그것은 즐거운 경험이었다."),
+        ]},
+        {"title": "박물관 관광", "sentences": [
+            ("We visited a famous {{museum}} on our trip.", "우리는 여행 중 유명한 박물관을 방문했다."),
+            ("Our {{guide}} welcomed us at the entrance.", "안내원이 입구에서 우리를 맞이했다."),
+            ("She explained the city's {{past}}.", "그녀는 도시의 오랜 역사를 설명했다."),
+            ("We learned about {{foreign}} visitors from the past.", "우리는 과거의 외국인 방문객에 대해 배웠다."),
+            ("A {{local}} artist's work was on display.", "현지 예술가의 작품이 전시되어 있었다."),
+            ("The tour was a valuable {{experience}}.", "그 관광은 값진 경험이었다."),
+            ("We continued our {{journey}} after lunch.", "우리는 점심 식사 후 여행을 계속했다."),
+            ("We stayed within our travel {{budget}}.", "우리는 여행 예산을 지켰다."),
+        ]},
+    ],
+    "Extended": [
+        {"title": "해외여행 준비", "sentences": [
+            ("Before departure, I checked whether my {{passport}} was still {{valid}}.", "출발 전에 나는 여권이 여전히 유효한지 확인했다."),
+            ("I tried to {{anticipate}} problems that might occur abroad.", "나는 해외에서 발생할 수 있는 문제를 예상하려고 했다."),
+            ("I prepared an {{adequate}} amount of money for emergencies.", "나는 비상시에 쓸 충분한 돈을 준비했다."),
+            ("I compared the {{currency}} rates before exchanging cash.", "현금을 환전하기 전에 환율을 비교했다."),
+            ("I wanted to be {{flexible}} if my plans changed.", "계획이 바뀌더라도 유연하게 대처하고 싶었다."),
+            ("The airline provided {{efficient}} online check-in services.", "항공사는 효율적인 온라인 체크인 서비스를 제공했다."),
+            ("Every {{passenger}} needed to bring the correct documents.", "모든 승객은 올바른 서류를 가져와야 했다."),
+            ("I hoped to {{explore}} new places during the trip.", "나는 여행 중 새로운 장소를 탐험하고 싶었다."),
+            ("I expected to encounter {{diverse}} traditions.", "나는 다양한 전통을 접할 것으로 기대했다."),
+            ("I wanted to {{interpret}} unfamiliar customs respectfully.", "나는 낯선 관습을 존중하며 이해하고 싶었다."),
+            ("Travel can change a person's {{perspective}}.", "여행은 사람의 관점을 바꿀 수 있다."),
+            ("Careful preparation helped me feel confident.", "철저한 준비 덕분에 자신감이 생겼다."),
+        ]},
+        {"title": "예상치 못한 호텔 문제", "sentences": [
+            ("The hotel could not {{accommodate}} our entire group.", "호텔은 우리 일행 전체를 수용할 수 없었다."),
+            ("We had to {{negotiate}} with the manager.", "우리는 관리자와 협상해야 했다."),
+            ("She offered to {{compensate}} us for the inconvenience.", "그녀는 불편에 대한 보상을 제안했다."),
+            ("We remained {{flexible}} and considered other options.", "우리는 유연하게 대처하며 다른 선택지를 고려했다."),
+            ("The manager suggested an {{adequate}} replacement room.", "관리자는 충분히 적절한 대체 객실을 제안했다."),
+            ("We needed a {{valid}} booking confirmation.", "우리는 유효한 예약 확인서가 필요했다."),
+            ("We tried to {{anticipate}} additional difficulties.", "우리는 추가적인 어려움을 예상하려고 했다."),
+            ("The staff found an {{efficient}} solution.", "직원들은 효율적인 해결책을 찾았다."),
+            ("We decided to {{explore}} the neighborhood while waiting.", "기다리는 동안 우리는 주변 지역을 둘러보기로 했다."),
+            ("The city had {{diverse}} places to eat.", "그 도시에는 다양한 식당이 있었다."),
+            ("The experience changed our {{perspective}} on travel.", "그 경험은 여행에 대한 우리의 관점을 바꾸었다."),
+            ("We learned to {{interpret}} unexpected events more calmly.", "우리는 예상치 못한 일을 더 차분하게 받아들이는 법을 배웠다."),
+        ]},
+        {"title": "다양한 문화를 만나는 여행", "sentences": [
+            ("We planned to {{explore}} a city with diverse traditions.", "우리는 다양한 전통을 지닌 도시를 탐험할 계획이었다."),
+            ("Our {{perspective}} changed as we met new people.", "새로운 사람들을 만나면서 우리의 관점이 달라졌다."),
+            ("A guide helped us {{interpret}} unfamiliar customs.", "안내원은 낯선 관습을 이해하도록 도와주었다."),
+            ("We tried to {{anticipate}} cultural differences.", "우리는 문화적 차이를 미리 예상하려고 했다."),
+            ("We kept our plans {{flexible}}.", "우리는 계획을 유연하게 유지했다."),
+            ("An {{adequate}} travel budget helped us relax.", "충분한 여행 예산 덕분에 여유를 가질 수 있었다."),
+            ("We exchanged our {{currency}} before visiting the market.", "시장에 가기 전에 화폐를 환전했다."),
+            ("We made sure our {{passport}} was secure.", "우리는 여권을 안전하게 보관했다."),
+            ("Our tickets remained {{valid}} throughout the trip.", "여행 내내 우리 표는 유효했다."),
+            ("We chose an {{efficient}} transportation option.", "우리는 효율적인 교통수단을 선택했다."),
+            ("Each {{passenger}} followed the guide's instructions.", "각 승객은 안내원의 지시를 따랐다."),
+            ("When a problem arose, we learned to {{negotiate}} politely.", "문제가 생겼을 때 우리는 정중하게 협상하는 법을 배웠다."),
+        ]},
+    ],
 }
 
 st.markdown("""<style>
 .block-container{max-width:880px;padding-top:1.4rem;padding-bottom:3rem}
-.wp-hero{padding:1.5rem 1.2rem;border-radius:20px;background:linear-gradient(125deg,#132a46,#24547b);color:white;margin-bottom:1rem}
-.wp-hero h1{color:white;margin:0;font-size:clamp(1.65rem,5vw,2.6rem)}
-.wp-hero p{color:#dcecf9;margin:.5rem 0 0}
-.wp-card{border:1px solid #dce5ee;border-radius:18px;padding:1.5rem;text-align:center;margin:1rem 0;background:#f8fbff;color:#162c43}
-.wp-word{font-size:clamp(2rem,8vw,3.5rem);font-weight:800;overflow-wrap:anywhere}
-.wp-meaning{font-size:clamp(1.35rem,5vw,2rem);font-weight:650}
-.wp-error{border:2px solid #d73535;border-left:9px solid #d73535;border-radius:12px;padding:1rem;margin:.6rem 0;background:#fff1f1;color:#782020}
-.wp-warn{border:2px solid #e5a22c;border-radius:12px;padding:1rem;margin:.6rem 0;background:#fff8e8;color:#704a0b}
-.wp-good{border:1px solid #b6d8c3;border-radius:12px;padding:1rem;margin:.6rem 0;background:#f0faf3;color:#225d35}
-@media(max-width:600px){.block-container{padding-left:.85rem;padding-right:.85rem}.wp-card{padding:1.1rem}.wp-hero{padding:1.15rem}}
+.hero{background:#193b59;color:#fff;border-radius:18px;padding:22px;margin-bottom:18px}
+.hero h1{color:#fff;margin:0}.hero p{color:#d8e9f7;margin:8px 0 0}
+.flash{background:#f5f8fd;color:#17283e;border-radius:20px;padding:30px 18px;text-align:center;margin:15px 0}
+.word{font-size:clamp(32px,6vw,56px);font-weight:800;overflow-wrap:anywhere}
+.meaning{font-size:clamp(20px,4vw,28px);font-weight:650}
+.sentence{border:1px solid #8b98a8;border-radius:12px;padding:14px;margin:10px 0}
+.english{font-size:1.1rem;line-height:1.75}.translation{color:#68798d;font-size:.94rem;margin-top:5px}
+.blank{color:#b45309;font-weight:800}
 </style>""", unsafe_allow_html=True)
+
 
 @st.cache_data(show_spinner=False)
 def load_words():
-    path = Path(__file__).resolve().parent / "vocabulary.csv"
-    data = pd.read_csv(path, encoding="utf-8-sig", dtype=str).fillna("")
-    needed = {"Word", "Level", "Korean meaning (뜻)"}
-    if not needed.issubset(data.columns):
-        raise ValueError(f"CSV에 필요한 열이 없습니다: {', '.join(sorted(needed - set(data.columns)))}")
-    for c in needed:
-        data[c] = data[c].astype(str).str.strip()
-    data = data[(data["Word"] != "") & (data["Korean meaning (뜻)"] != "")]
-    return data.reset_index(drop=True)
+    path = Path(__file__).with_name("vocabulary.csv")
+    df = pd.read_csv(path, dtype=str, encoding="utf-8-sig").fillna("")
+    required = {"Word", "Level", "Korean meaning (뜻)"}
+    if not required.issubset(df.columns):
+        raise ValueError(f"CSV에 필요한 열이 없습니다: {required - set(df.columns)}")
+    return df[df["Word"].str.strip().ne("") & df["Korean meaning (뜻)"].str.strip().ne("")].copy()
 
 
-def clean(s):
-    s = unicodedata.normalize("NFKC", str(s)).casefold().strip()
-    return re.sub(r"[\s.,!?\-_'\"’]+", "", s)
+def norm(value):
+    return unicodedata.normalize("NFKC", str(value)).casefold().strip()
 
 
-def accepted_meanings(meaning):
-    # CSV sometimes lists multiple glosses; permit common separators.
-    values = [meaning]
-    values.extend(re.split(r"[,;/、]|\s*\([^)]*\)\s*", meaning))
-    values.extend(re.split(r"\s+(?:또는|혹은)\s+", meaning))
-    return {clean(v) for v in values if clean(v)}
+def meaning_ok(answer, meaning):
+    variants = [meaning] + re.split(r"[,;/、]", meaning)
+    return norm(answer) in {norm(v) for v in variants if v.strip()}
 
 
-def is_correct(answer, item, direction):
-    if direction == "EN → KO":
-        return clean(answer) in accepted_meanings(item["meaning"])
-    return clean(answer) == clean(item["word"])
+def target_words(passage):
+    return [w for sentence, _ in passage["sentences"] for w in re.findall(r"\{\{([A-Za-z-]+)\}\}", sentence)]
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
-def dictionary_relations(word):
-    """Optional public dictionary enrichment; unavailable data is never invented."""
-    try:
-        response = requests.get(
-            "https://api.dictionaryapi.dev/api/v2/entries/en/" + requests.utils.quote(word),
-            timeout=4,
-        )
-        response.raise_for_status()
-        syn, ant = [], []
-        for entry in response.json() if isinstance(response.json(), list) else []:
-            for meaning in entry.get("meanings", []):
-                syn.extend(meaning.get("synonyms", []))
-                ant.extend(meaning.get("antonyms", []))
-                for definition in meaning.get("definitions", []):
-                    syn.extend(definition.get("synonyms", []))
-                    ant.extend(definition.get("antonyms", []))
-        return list(dict.fromkeys(syn))[:6], list(dict.fromkeys(ant))[:6]
-    except (requests.RequestException, ValueError, TypeError, AttributeError):
-        return [], []
+def full_sentence(sentence):
+    return re.sub(r"\{\{([A-Za-z-]+)\}\}", lambda m: m.group(1), sentence)
 
 
-def relation_block(word):
-    original_syn, original_ant = RELATIONS.get(word.lower().strip(), ([], []))
-    extra_syn, extra_ant = dictionary_relations(word)
-    synonyms = list(dict.fromkeys(original_syn + extra_syn))[:6]
-    antonyms = list(dict.fromkeys(original_ant + extra_ant))[:6]
-    st.markdown("**🔎 유의어 · 반의어 (Synonyms & Antonyms)**")
-    st.write("**유의어:** " + ", ".join(synonyms) if synonyms else "유의어: 확인된 정보 없음")
-    st.write("**반의어:** " + ", ".join(antonyms) if antonyms else "반의어: 확인된 정보 없음")
-    st.caption("공개 사전 API와 일부 수동 등록 자료를 활용합니다. 문맥에 따라 의미가 다를 수 있으며, 인터넷 연결에 따라 검색 결과가 달라질 수 있습니다.")
+def initialize_pack(df, level, passage_idx):
+    passage = PASSAGES[level][passage_idx]
+    targets = target_words(passage)
+    if len(targets) != TARGET_COUNTS[level] or len(set(targets)) != len(targets):
+        raise ValueError("지문의 목표 어휘 개수 또는 중복 설정이 올바르지 않습니다.")
+    pool = df[df["Level"] == level].copy()
+    pool["_key"] = pool["Word"].str.strip().str.casefold()
+    items = []
+    for word in targets:
+        matched = pool[pool["_key"] == word.casefold()]
+        if matched.empty:
+            raise ValueError(f"{LABELS[level]} CSV에서 '{word}'를 찾을 수 없습니다.")
+        row = matched.iloc[0]
+        items.append({"word": row["Word"], "meaning": row["Korean meaning (뜻)"]})
+    random.shuffle(items)
+    st.session_state.update(
+        pack=items, level=level, passage_idx=passage_idx, phase="Flashcards",
+        card_idx=0, revealed=False,
+        quiz_idx=0, quiz_tries=0, quiz_done=False, quiz_results={},
+        spelling_idx=0, spelling_tries=0, spelling_done=False, spelling_results={},
+        reading_idx=0, reading_tries=0, reading_done=False, reading_results={},
+        input_version=st.session_state.get("input_version", 0) + 1,
+    )
 
 
-@st.cache_data(show_spinner=False, max_entries=250)
-def pronunciation_audio(word, accent):
-    output = io.BytesIO()
-    gTTS(text=word, lang="en", tld="com" if accent == "us" else "co.uk").write_to_fp(output)
-    return output.getvalue()
-
-
-def pronunciation_block(word):
-    st.markdown("**🔊 발음 듣기**")
-    left, right = st.columns(2)
-    for column, accent, label in [(left, "us", "🇺🇸 미국식"), (right, "uk", "🇬🇧 영국식")]:
-        with column:
-            try:
-                audio = pronunciation_audio(word, accent)
-                st.caption(label)
-                st.audio(audio, format="audio/mp3")
-            except Exception:
-                st.caption(f"{label}: 현재 음성을 불러올 수 없습니다.")
-
-
-def start_diagnostic(data):
-    # 5 questions per source category; multiple choice is a screening tool, not a certified test.
-    selected = []
-    for level in LEVELS.values():
-        pool = data[data["Level"] == level]
-        selected.extend(pool.sample(n=min(5, len(pool))).to_dict("records"))
-    random.shuffle(selected)
-    all_meanings = data["Korean meaning (뜻)"].drop_duplicates().tolist()
-    questions = []
-    for item in selected:
-        answer = item["Korean meaning (뜻)"]
-        wrong = random.sample([m for m in all_meanings if m != answer], 3)
-        options = wrong + [answer]
-        random.shuffle(options)
-        questions.append({"word": item["Word"], "level": item["Level"], "answer": answer, "options": options})
-    st.session_state.diagnostic_questions = questions
-    st.session_state.diagnostic_answers = {}
-    st.session_state.diagnostic_idx = 0
-    st.session_state.diagnostic_done = False
-
-
-def diagnostic_view(data):
-    st.subheader("🎓 어휘 수준 진단")
-    st.caption("초급·중급·고급 단어 각 5문항, 총 15문항입니다. 공식적인 영어 능력 평가가 아닌 학습 수준 추천용입니다.")
-    if "diagnostic_questions" not in st.session_state:
-        if st.button("📝 15문항 수준 진단 시작", type="primary", use_container_width=True):
-            start_diagnostic(data)
-            st.rerun()
-        return
-    questions = st.session_state.diagnostic_questions
-    answers = st.session_state.diagnostic_answers
-    if st.session_state.diagnostic_done:
-        scores = {level: [0, 0] for level in LEVELS.values()}
-        for i, question in enumerate(questions):
-            scores[question["level"]][1] += 1
-            if answers.get(i) == question["answer"]:
-                scores[question["level"]][0] += 1
-        total = sum(score[0] for score in scores.values())
-        st.metric("진단 정답", f"{total} / {len(questions)}")
-        for level, (correct, count) in scores.items():
-            st.write(f"{level}: {correct} / {count}")
-        if scores["Extended"][0] >= 3 and scores["MidHigh"][0] >= 3:
-            suggested = "Extended"
-        elif scores["MidHigh"][0] >= 3 or (scores["Elementary"][0] >= 4 and scores["MidHigh"][0] >= 2):
-            suggested = "MidHigh"
-        else:
-            suggested = "Elementary"
-        label = next(k for k, v in LEVELS.items() if v == suggested)
-        st.success(f"추천 학습 수준: {label}")
-        if st.button("📚 추천 수준으로 20개 단어 시작", type="primary", use_container_width=True):
-            new_pack(data, suggested)
-            st.session_state["level_choice"] = label
-            st.rerun()
-        if st.button("진단 다시 하기", use_container_width=True):
-            start_diagnostic(data)
-            st.rerun()
-        return
-    idx = st.session_state.diagnostic_idx
-    q = questions[idx]
-    st.progress((idx + 1) / len(questions), text=f"진단 {idx + 1} / {len(questions)}")
-    st.markdown(f'<div class="wp-card"><div class="wp-word">{html.escape(q["word"])}</div><p>올바른 한국어 뜻을 고르세요.</p></div>', unsafe_allow_html=True)
-    with st.form(f"diagnostic_{idx}"):
-        choice = st.radio("정답 선택", q["options"], index=None)
-        submitted = st.form_submit_button("다음 문제 →" if idx < len(questions)-1 else "진단 결과 확인", type="primary", use_container_width=True)
-    if submitted:
-        if choice is None:
-            st.warning("답을 선택해 주세요.")
-        else:
-            st.session_state.diagnostic_answers[idx] = choice
-            if idx == len(questions)-1:
-                st.session_state.diagnostic_done = True
-            else:
-                st.session_state.diagnostic_idx += 1
-            st.rerun()
-
-
-def new_pack(data, level):
-    pool = data[data["Level"] == level]
-    if len(pool) < 20:
-        st.error("이 수준에는 20개 이상의 단어가 필요합니다.")
-        return
-    rows = pool.sample(n=20).to_dict("records")
-    st.session_state.pack = [{"word": r["Word"], "meaning": r["Korean meaning (뜻)"], "level": r["Level"]} for r in rows]
-    st.session_state.pack_level = level
-    st.session_state.phase = "Flashcards"
-    st.session_state.card_idx = 0
-    st.session_state.card_revealed = False
-    st.session_state.quiz_idx = 0
-    st.session_state.quiz_attempt = 0
-    st.session_state.quiz_feedback = ""
-    st.session_state.quiz_resolved = False
-    st.session_state.results = {}
-    st.session_state.quiz_directions = ["EN → KO", "KO → EN"] * 10
-    random.shuffle(st.session_state.quiz_directions)
-    st.session_state.answer_key = 0
-    st.session_state.spell_idx = 0
-    st.session_state.spell_attempt = 0
-    st.session_state.spell_resolved = False
-    st.session_state.spell_results = {}
-    st.session_state.spell_key = 0
-
-
-def go(phase):
+def navigate(phase):
     st.session_state.phase = phase
     st.rerun()
 
 
+@st.cache_data(show_spinner=False, max_entries=300)
+def audio_bytes(text, accent="US"):
+    buffer = io.BytesIO()
+    gTTS(text=text, lang="en", tld="com" if accent == "US" else "co.uk").write_to_fp(buffer)
+    return buffer.getvalue()
+
+
+def audio_player(text, accent="US", label=None):
+    if label:
+        st.caption(label)
+    try:
+        st.audio(audio_bytes(text, accent), format="audio/mp3")
+    except Exception:
+        st.caption("음성을 불러올 수 없습니다. 인터넷 연결을 확인해 주세요.")
+
+
+def related(word):
+    syn, ant = RELATED.get(norm(word), ([], []))
+    st.markdown("**🔎 유의어 · 반의어**")
+    st.write("**유의어:** " + (", ".join(syn) if syn else "검증된 자료 없음"))
+    st.write("**반의어:** " + (", ".join(ant) if ant else "검증된 자료 없음"))
+    st.caption("의미가 다른 사전 항목이 섞이지 않도록 검토된 표현만 제공합니다.")
+
+
+def diagnostic(df):
+    st.subheader("🧭 어휘 수준 진단")
+    st.caption("각 수준 5문항씩 총 15문항입니다. 공식 평가가 아닌 학습 수준 추천용입니다.")
+    if "diag_questions" not in st.session_state:
+        if st.button("15문항 진단 시작", type="primary"):
+            rows = []
+            for level in LEVELS.values():
+                rows.extend(df[df["Level"] == level].sample(5).to_dict("records"))
+            random.shuffle(rows)
+            meanings = df["Korean meaning (뜻)"].drop_duplicates().tolist()
+            questions = []
+            for row in rows:
+                answer = row["Korean meaning (뜻)"]
+                choices = random.sample([x for x in meanings if x != answer], 3) + [answer]
+                random.shuffle(choices)
+                questions.append({"word": row["Word"], "answer": answer, "level": row["Level"], "choices": choices})
+            st.session_state.diag_questions = questions
+            st.session_state.diag_idx = 0
+            st.session_state.diag_answers = {}
+            st.rerun()
+        return
+    questions = st.session_state.diag_questions
+    idx = st.session_state.diag_idx
+    if idx == len(questions):
+        scores = {level: 0 for level in LEVELS.values()}
+        for i, q in enumerate(questions):
+            scores[q["level"]] += int(st.session_state.diag_answers.get(i) == q["answer"])
+        for level, score in scores.items():
+            st.write(f"{LABELS[level]}: **{score}/5**")
+        if scores["Extended"] >= 3 and scores["MidHigh"] >= 3:
+            suggested = "Extended"
+        elif scores["MidHigh"] >= 3:
+            suggested = "MidHigh"
+        else:
+            suggested = "Elementary"
+        st.success(f"추천 학습 수준: {LABELS[suggested]}")
+        if st.button("추천 수준으로 이동", type="primary"):
+            st.session_state.level_select = LABELS[suggested]
+            st.session_state.show_diag = False
+            st.rerun()
+        if st.button("진단 다시 하기"):
+            del st.session_state.diag_questions
+            st.rerun()
+        return
+    q = questions[idx]
+    st.progress((idx + 1) / len(questions), text=f"{idx + 1}/{len(questions)}")
+    st.markdown(f"### {q['word']}")
+    with st.form(f"diagnostic_{idx}"):
+        choice = st.radio("한국어 뜻을 고르세요", q["choices"], index=None)
+        submitted = st.form_submit_button("다음 문제 →", type="primary")
+    if submitted:
+        if choice is None:
+            st.warning("답을 선택해 주세요.")
+        else:
+            st.session_state.diag_answers[idx] = choice
+            st.session_state.diag_idx += 1
+            st.rerun()
+
+
+def answer_form(stage, index, prompt, answer, meaning, korean_answer=False):
+    tries_key = f"{stage}_tries"
+    done_key = f"{stage}_done"
+    st.markdown(prompt)
+    if st.session_state[tries_key] == 1 and not st.session_state[done_key]:
+        if korean_answer:
+            st.warning(f"💡 힌트: 한국어 뜻의 첫 글자는 **{meaning[:1]}**입니다.")
+        else:
+            st.warning(f"💡 힌트: 첫 글자 **{answer[:1].upper()}**, 글자 수 **{len(answer)}**")
+    if st.session_state[done_key]:
+        mistakes = st.session_state[f"{stage}_results"][index]["mistakes"]
+        if mistakes == 0:
+            st.success("첫 번째 시도에 정답!")
+        elif mistakes == 1:
+            st.warning("힌트 후 정답! Review에 추가되었습니다.")
+        else:
+            st.error("두 번 틀렸습니다. Review에서 복습하세요.")
+        st.write(f"**정답:** {answer} — {meaning}")
+        if st.button("다음 문제 →", key=f"next_{stage}_{index}", type="primary"):
+            st.session_state[f"{stage}_idx"] += 1
+            st.session_state[tries_key] = 0
+            st.session_state[done_key] = False
+            st.session_state.input_version += 1
+            st.rerun()
+        return
+    with st.form(f"answer_{stage}_{index}_{st.session_state.input_version}"):
+        response = st.text_input("정답 입력", autocomplete="off")
+        submitted = st.form_submit_button("정답 확인", type="primary")
+    if submitted:
+        if not response.strip():
+            st.warning("답을 입력해 주세요.")
+            return
+        correct = meaning_ok(response, meaning) if korean_answer else norm(response) == norm(answer)
+        tries = st.session_state[tries_key]
+        if correct or tries == 1:
+            st.session_state[f"{stage}_results"][index] = {"mistakes": tries if correct else 2}
+            st.session_state[done_key] = True
+        else:
+            st.session_state[tries_key] = 1
+        st.rerun()
+
+
+def reading_view(pack):
+    passage = PASSAGES[st.session_state.level][st.session_state.passage_idx]
+    sentences = passage["sentences"]
+    targets = target_words(passage)
+    idx = st.session_state.reading_idx
+    st.subheader(f"✈️ 여행 독해 · {passage['title']}")
+    st.caption("영어 문장과 한국어 해석을 함께 보고, 각 문장 아래에서 미국식 발음을 들을 수 있습니다. 발음을 들으면 빈칸 정답도 들릴 수 있어요.")
+    st.progress(min(idx + 1, len(targets)) / len(targets), text=f"빈칸 {min(idx + 1, len(targets))}/{len(targets)}")
+    blank_index = 0
+    for number, (english, korean) in enumerate(sentences, 1):
+        def replace(match):
+            nonlocal blank_index
+            current = blank_index
+            blank_index += 1
+            if current < idx:
+                return f"<b>{html.escape(match.group(1))}</b>"
+            return f'<span class="blank">[{current + 1}] ______</span>'
+        shown = re.sub(r"\{\{([A-Za-z-]+)\}\}", replace, html.escape(english))
+        st.markdown(f'<div class="sentence"><div class="english"><b>{number}.</b> {shown}</div><div class="translation">{html.escape(korean)}</div></div>', unsafe_allow_html=True)
+        audio_player(full_sentence(english), "US", f"🇺🇸 {number}번 문장 발음 듣기")
+    if idx == len(targets):
+        st.success("🎉 모든 빈칸을 완성했습니다!")
+        if st.button("오답 복습하기", type="primary"):
+            navigate("Review")
+        return
+    answer = targets[idx]
+    item = next(x for x in pack if norm(x["word"]) == norm(answer))
+    answer_form("reading", idx, f"**[{idx + 1}] 빈칸에 들어갈 영어 단어는?**", answer, item["meaning"])
+
+
+def review_view(pack):
+    st.subheader("🔁 오답 복습")
+    wrong = {}
+    targets = target_words(PASSAGES[st.session_state.level][st.session_state.passage_idx])
+    for stage in ("quiz", "spelling", "reading"):
+        for idx, result in st.session_state[f"{stage}_results"].items():
+            if result["mistakes"] > 0:
+                word = targets[idx] if stage == "reading" else pack[idx]["word"]
+                wrong.setdefault(norm(word), set()).add(stage)
+    if not wrong:
+        st.success("지금까지 틀린 단어가 없어요!")
+    else:
+        st.metric("복습할 단어", len(wrong))
+        for word, stages in wrong.items():
+            item = next(x for x in pack if norm(x["word"]) == word)
+            st.markdown(f"**{item['word']}** — {item['meaning']}")
+            st.caption("오답 단계: " + ", ".join(sorted(stages)))
+            related(item["word"])
+            st.divider()
+    if st.button("Flashcards로 돌아가기"):
+        navigate("Flashcards")
+
+
 try:
-    words = load_words()
-except Exception as e:
-    st.error(f"단어 파일을 읽지 못했습니다: {e}")
+    words_df = load_words()
+except Exception as exc:
+    st.error(f"vocabulary.csv를 불러올 수 없습니다: {exc}")
     st.stop()
 
-st.markdown('<div class="wp-hero"><h1>📚 Word Passport</h1><p>Choose your level · Learn 20 words · Practice · Review</p></div>', unsafe_allow_html=True)
-
+st.markdown('<div class="hero"><h1>📚 Word Passport</h1><p>여행으로 배우는 영어 · 수준 진단 · 플래시카드 · 독해 · 복습</p></div>', unsafe_allow_html=True)
 if "pack" not in st.session_state:
     st.session_state.pack = []
-    st.session_state.phase = "Flashcards"
+if "show_diag" not in st.session_state:
+    st.session_state.show_diag = False
 
-level_label = st.selectbox("🎓 학습 수준 선택", list(LEVELS), index=1, key="level_choice")
-selected_level = LEVELS[level_label]
-level_count = int((words["Level"] == selected_level).sum())
-st.caption(f"전체 데이터 {len(words):,}개 · 선택한 수준 {level_count:,}개 · 한 묶음 20개")
-
-left, right = st.columns([1.25, 1])
-with left:
-    if st.button("🎲 새로운 20개 단어 시작", type="primary", use_container_width=True):
-        new_pack(words, selected_level)
+with st.sidebar:
+    st.header("내 학습 현황")
+    st.write("현재 수준:", LABELS.get(st.session_state.get("level"), "미선택"))
+    st.write("현재 단어:", len(st.session_state.pack), "개")
+    if st.button("🧭 수준 진단"):
+        st.session_state.show_diag = True
         st.rerun()
-with right:
-    if st.session_state.pack:
-        st.caption("현재 묶음: " + {"Elementary": "초등", "MidHigh": "중등", "Extended": "고등"}.get(st.session_state.pack_level, st.session_state.pack_level))
-    else:
-        st.caption("시작 버튼을 눌러 학습하세요.")
+    if st.button("📚 학습 화면"):
+        st.session_state.show_diag = False
+        st.rerun()
 
-with st.expander("🎯 내 어휘 수준 진단하기", expanded=not bool(st.session_state.pack)):
-    diagnostic_view(words)
-
-if not st.session_state.pack:
-    st.info("난이도를 선택하고 ‘새로운 20개 단어 시작’을 눌러 주세요.")
+if st.session_state.show_diag:
+    diagnostic(words_df)
     st.stop()
 
-if selected_level != st.session_state.pack_level:
-    st.warning("현재 학습 중인 묶음은 이전에 선택한 수준입니다. 새로운 수준으로 바꾸려면 ‘새로운 20개 단어 시작’을 눌러 주세요.")
+level_label = st.selectbox("🎓 학습 수준", list(LEVELS), key="level_select")
+selected_level = LEVELS[level_label]
+passage_names = [p["title"] for p in PASSAGES[selected_level]]
+passage_name = st.selectbox("✈️ 여행 지문 선택", passage_names)
+selected_passage_idx = passage_names.index(passage_name)
+passage = PASSAGES[selected_level][selected_passage_idx]
+st.caption(f"{level_label}: 플래시카드 {TARGET_COUNTS[selected_level]}개 · 빈칸 {TARGET_COUNTS[selected_level]}개 · 지문 {len(passage['sentences'])}문장")
+if st.button("🎲 선택한 여행 지문으로 학습 시작", type="primary", use_container_width=True):
+    try:
+        initialize_pack(words_df, selected_level, selected_passage_idx)
+        st.rerun()
+    except ValueError as exc:
+        st.error(str(exc))
 
-phase = st.radio("학습 단계", ["Flashcards", "Quiz", "Spelling", "Review"], horizontal=True, key="phase")
+if not st.session_state.pack:
+    st.info("수준과 여행 지문을 선택한 후 학습 시작 버튼을 눌러 주세요.")
+    st.stop()
+
 pack = st.session_state.pack
+count = len(pack)
+if selected_level != st.session_state.level or selected_passage_idx != st.session_state.passage_idx:
+    st.warning("선택한 수준 또는 지문이 현재 학습 내용과 다릅니다. 새로 시작하려면 위 버튼을 눌러 주세요.")
+
+phase = st.radio("학습 단계", ["Flashcards", "Quiz", "Spelling", "Reading", "Review"], horizontal=True, key="phase")
 
 if phase == "Flashcards":
     idx = st.session_state.card_idx
     item = pack[idx]
-    st.progress((idx + 1) / len(pack), text=f"Flashcard {idx + 1} / {len(pack)}")
-    if st.session_state.card_revealed:
-        st.markdown(f'<div class="wp-card"><div class="wp-word">{html.escape(item["word"])}</div><hr><div class="wp-meaning">{html.escape(item["meaning"])}</div></div>', unsafe_allow_html=True)
-        pronunciation_block(item["word"])
-        relation_block(item["word"])
+    st.progress((idx + 1) / count, text=f"Flashcard {idx + 1}/{count}")
+    word = html.escape(item["word"])
+    meaning = html.escape(item["meaning"])
+    if st.session_state.revealed:
+        st.markdown(f'<div class="flash"><div class="word">{word}</div><hr><div class="meaning">{meaning}</div></div>', unsafe_allow_html=True)
+        st.markdown("**🔊 단어 발음**")
+        us, uk = st.columns(2)
+        with us:
+            audio_player(item["word"], "US", "🇺🇸 미국식")
+        with uk:
+            audio_player(item["word"], "GB", "🇬🇧 영국식")
+        related(item["word"])
     else:
-        st.markdown(f'<div class="wp-card"><div class="wp-word">{html.escape(item["word"])}</div><p>뜻을 생각한 후 정답을 확인하세요.</p></div>', unsafe_allow_html=True)
-    if st.button("🔄 뜻 숨기기" if st.session_state.card_revealed else "👀 뜻 확인하기", use_container_width=True):
-        st.session_state.card_revealed = not st.session_state.card_revealed
+        st.markdown(f'<div class="flash"><div class="word">{word}</div><p>뜻을 생각해 보세요.</p></div>', unsafe_allow_html=True)
+    if st.button("뜻 숨기기" if st.session_state.revealed else "👀 뜻 확인하기", use_container_width=True):
+        st.session_state.revealed = not st.session_state.revealed
         st.rerun()
     a, b = st.columns(2)
     with a:
-        if st.button("← 이전 단어", disabled=idx == 0, use_container_width=True):
+        if st.button("← 이전", disabled=idx == 0, use_container_width=True):
             st.session_state.card_idx -= 1
-            st.session_state.card_revealed = False
+            st.session_state.revealed = False
             st.rerun()
     with b:
-        if st.button("다음 단어 →", disabled=idx == len(pack) - 1, use_container_width=True):
+        if st.button("다음 →", disabled=idx == count - 1, use_container_width=True):
             st.session_state.card_idx += 1
-            st.session_state.card_revealed = False
+            st.session_state.revealed = False
             st.rerun()
-    if st.button("✏️ Quiz 시작", type="primary", use_container_width=True):
-        go("Quiz")
+    if st.button("✈️ 여행 지문 풀기", type="primary", use_container_width=True):
+        navigate("Reading")
 
 elif phase == "Quiz":
     idx = st.session_state.quiz_idx
-    if idx >= len(pack):
-        st.success("🎉 20문제를 모두 풀었습니다!")
-        results = st.session_state.results
-        perfect = sum(1 for r in results.values() if r["mistakes"] == 0)
-        st.metric("첫 시도 정답", f"{perfect} / {len(pack)}")
-        if st.button("🔍 오답 복습하기", type="primary", use_container_width=True):
-            go("Review")
+    if idx == count:
+        st.success("Quiz 완료!")
+        st.metric("첫 시도 정답", f'{sum(v["mistakes"] == 0 for v in st.session_state.quiz_results.values())}/{count}')
+        if st.button("오답 복습하기"):
+            navigate("Review")
     else:
         item = pack[idx]
-        direction = st.session_state.quiz_directions[idx]
-        st.progress((idx + 1) / len(pack), text=f"Quiz {idx + 1} / {len(pack)}")
-        if direction == "EN → KO":
-            st.markdown(f'<div class="wp-card"><div class="wp-word">{html.escape(item["word"])}</div><p>한국어 뜻을 입력하세요.</p></div>', unsafe_allow_html=True)
+        st.progress((idx + 1) / count, text=f"Quiz {idx + 1}/{count}")
+        if idx % 2 == 0:
+            answer_form("quiz", idx, f'### {item["word"]}\n한국어 뜻을 입력하세요.', item["meaning"], item["meaning"], korean_answer=True)
         else:
-            st.markdown(f'<div class="wp-card"><div class="wp-meaning">{html.escape(item["meaning"])}</div><p>영어 단어를 입력하세요.</p></div>', unsafe_allow_html=True)
-
-        if st.session_state.quiz_attempt == 1 and not st.session_state.quiz_resolved:
-            if direction == "KO → EN":
-                word = item["word"]
-                hint = f"첫 글자: {word[:1].upper()} · 글자 수: {len(word)}"
-            else:
-                meaning = item["meaning"]
-                hint = f"한국어 뜻의 첫 글자: {meaning[:1]} · 첫 번째 뜻의 글자 수: {len(meaning.split(',')[0].strip())}"
-            st.warning(f"💡 힌트: {hint} — 한 번 더 도전해 보세요!")
-
-        if st.session_state.quiz_resolved:
-            if st.session_state.quiz_feedback == "correct_first":
-                st.success("정답! 첫 번째 시도에 맞혔어요.")
-            elif st.session_state.quiz_feedback == "correct_second":
-                st.warning("힌트 후 정답! 이 단어는 Review에 표시됩니다.")
-            else:
-                st.error("두 번 모두 틀렸어요. Review에서 다시 공부해 보세요.")
-            st.write(f'**정답:** {item["word"]} — {item["meaning"]}')
-            relation_block(item["word"])
-            if st.button("다음 문제 →" if idx < 19 else "결과 확인 →", type="primary", use_container_width=True):
-                st.session_state.quiz_idx += 1
-                st.session_state.quiz_attempt = 0
-                st.session_state.quiz_resolved = False
-                st.session_state.quiz_feedback = ""
-                st.session_state.answer_key += 1
-                st.rerun()
-        else:
-            with st.form(key=f"answer_{st.session_state.answer_key}", clear_on_submit=False):
-                answer = st.text_input("정답 입력", placeholder="여기에 답을 입력하세요", autocomplete="off")
-                submitted = st.form_submit_button("정답 확인", type="primary", use_container_width=True)
-            if submitted:
-                if not answer.strip():
-                    st.warning("답을 입력해 주세요.")
-                else:
-                    correct = is_correct(answer, item, direction)
-                    if correct:
-                        mistakes = st.session_state.quiz_attempt
-                        st.session_state.results[idx] = {"mistakes": mistakes, "direction": direction, "last_answer": answer}
-                        st.session_state.quiz_feedback = "correct_first" if mistakes == 0 else "correct_second"
-                        st.session_state.quiz_resolved = True
-                    elif st.session_state.quiz_attempt == 0:
-                        st.session_state.quiz_attempt = 1
-                    else:
-                        st.session_state.results[idx] = {"mistakes": 2, "direction": direction, "last_answer": answer}
-                        st.session_state.quiz_feedback = "incorrect_second"
-                        st.session_state.quiz_resolved = True
-                    st.rerun()
-
+            answer_form("quiz", idx, f'### {item["meaning"]}\n영어 단어를 입력하세요.', item["word"], item["meaning"])
 
 elif phase == "Spelling":
-    idx = st.session_state.spell_idx
-    if idx >= len(pack):
-        st.success("20개 단어 철자 연습을 마쳤어요!")
-        first = sum(r["mistakes"] == 0 for r in st.session_state.spell_results.values())
-        st.metric("첫 시도 철자 정답", f"{first} / {len(pack)}")
-        if st.button("🔍 틀린 단어만 복습하기", type="primary", use_container_width=True):
-            go("Review")
+    idx = st.session_state.spelling_idx
+    if idx == count:
+        st.success("철자 연습 완료!")
+        if st.button("오답 복습하기"):
+            navigate("Review")
     else:
         item = pack[idx]
-        st.progress((idx + 1) / len(pack), text=f"Spelling {idx + 1} / {len(pack)}")
-        st.markdown(f'<div class="wp-card"><div class="wp-meaning">{html.escape(item["meaning"])}</div><p>영어 철자를 직접 입력하세요.</p></div>', unsafe_allow_html=True)
-        if st.session_state.spell_attempt == 1 and not st.session_state.spell_resolved:
-            st.warning(f'💡 힌트: 첫 글자 {item["word"][:1].upper()} · 글자 수 {len(item["word"])} — 다시 입력하세요!')
-        if st.session_state.spell_resolved:
-            result = st.session_state.spell_results[idx]
-            if result["mistakes"] == 0:
-                st.success("첫 번째 시도에 정답!")
-            elif result["mistakes"] == 1:
-                st.warning("힌트 후 정답! Review에 표시됩니다.")
-            else:
-                st.error("두 번 틀렸어요. Review에서 다시 공부해요.")
-            st.write(f'**정답:** {item["word"]} — {item["meaning"]}')
-            relation_block(item["word"])
-            if st.button("다음 철자 →" if idx < 19 else "연습 결과 →", type="primary", use_container_width=True):
-                st.session_state.spell_idx += 1
-                st.session_state.spell_attempt = 0
-                st.session_state.spell_resolved = False
-                st.session_state.spell_key += 1
-                st.rerun()
-        else:
-            with st.form(key=f'spelling_{st.session_state.spell_key}'):
-                answer = st.text_input("영어 철자", placeholder="영어 단어를 입력하세요", autocomplete="off")
-                submitted = st.form_submit_button("철자 확인", type="primary", use_container_width=True)
-            if submitted:
-                if not answer.strip():
-                    st.warning("철자를 입력해 주세요.")
-                elif clean(answer) == clean(item["word"]):
-                    st.session_state.spell_results[idx] = {"mistakes": st.session_state.spell_attempt, "direction": "Spelling"}
-                    st.session_state.spell_resolved = True
-                    st.rerun()
-                elif st.session_state.spell_attempt == 0:
-                    st.session_state.spell_attempt = 1
-                    st.rerun()
-                else:
-                    st.session_state.spell_results[idx] = {"mistakes": 2, "direction": "Spelling"}
-                    st.session_state.spell_resolved = True
-                    st.rerun()
+        st.progress((idx + 1) / count, text=f"Spelling {idx + 1}/{count}")
+        answer_form("spelling", idx, f'### {item["meaning"]}\n영어 철자를 입력하세요.', item["word"], item["meaning"])
+
+elif phase == "Reading":
+    reading_view(pack)
 
 else:
-    quiz_results = st.session_state.results
-    spell_results = st.session_state.spell_results
-    wrong = []
-    for i, item in enumerate(pack):
-        mistakes = []
-        if i in quiz_results and quiz_results[i]["mistakes"] > 0:
-            mistakes.append(("Quiz", quiz_results[i]["mistakes"]))
-        if i in spell_results and spell_results[i]["mistakes"] > 0:
-            mistakes.append(("Spelling", spell_results[i]["mistakes"]))
-        if mistakes:
-            wrong.append((i, mistakes))
-    if not quiz_results and not spell_results:
-        st.info("아직 학습 기록이 없습니다. Quiz 또는 Spelling을 먼저 풀어 주세요.")
-    else:
-        st.metric("틀린 단어", len(wrong))
-        st.caption("Quiz나 Spelling에서 한 번이라도 틀린 단어만 표시합니다. 맞힌 단어는 나타나지 않습니다.")
-        if not wrong:
-            st.success("지금까지 틀린 단어가 없어요! 🎉")
-        for i, mistakes in sorted(wrong, key=lambda pair: -max(x[1] for x in pair[1])):
-            item = pack[i]
-            twice = any(n >= 2 for _, n in mistakes)
-            category = "wp-error" if twice else "wp-warn"
-            status = "🔴 집중 복습" if twice else "🟠 복습 필요"
-            sources = ", ".join(f"{mode} {n}회 오답" for mode, n in mistakes)
-            st.markdown(f'<div class="{category}"><strong>{status}</strong><br><strong>{html.escape(item["word"])}</strong> — {html.escape(item["meaning"])}<br><small>{html.escape(sources)}</small></div>', unsafe_allow_html=True)
-            relation_block(item["word"])
-        a, b = st.columns(2)
-        with a:
-            if st.button("🔁 Quiz 다시 풀기", use_container_width=True):
-                st.session_state.quiz_idx = 0
-                st.session_state.quiz_attempt = 0
-                st.session_state.quiz_resolved = False
-                st.session_state.quiz_feedback = ""
-                st.session_state.results = {}
-                st.session_state.answer_key += 1
-                go("Quiz")
-        with b:
-            if st.button("🔁 Spelling 다시 하기", use_container_width=True):
-                st.session_state.spell_idx = 0
-                st.session_state.spell_attempt = 0
-                st.session_state.spell_resolved = False
-                st.session_state.spell_results = {}
-                st.session_state.spell_key += 1
-                go("Spelling")
+    review_view(pack)
 
 st.divider()
-st.caption("Word Passport · CSV 기반 3,000개 단어 · 학습 결과는 현재 브라우저 세션에서만 유지됩니다.")
+st.caption("Word Passport · 3,000개 CSV 단어 기반 · 학습 기록은 현재 브라우저 세션에만 유지됩니다.")
