@@ -125,14 +125,18 @@ def is_correct(answer, item, direction):
 
 
 def relation_block(word):
-    syn, ant = RELATIONS.get(word.lower(), ([], []))
-    if syn or ant:
-        with st.expander("🔎 관련 어휘 · Synonyms & Antonyms", expanded=False):
-            if syn:
-                st.write("**유의어 (Synonyms):** " + ", ".join(syn))
-            if ant:
-                st.write("**반의어 (Antonyms):** " + ", ".join(ant))
-            st.caption("관련 어휘는 일부 단어에만 제공하며, 문맥에 따라 완전히 바꿔 쓸 수는 없습니다.")
+    """Show related vocabulary visibly, with an honest fallback."""
+    syn, ant = RELATIONS.get(word.lower().strip(), ([], []))
+    st.markdown("**🔎 유의어 · 반의어 (Synonyms & Antonyms)**")
+    if syn:
+        st.write("**유의어:** " + ", ".join(syn))
+    else:
+        st.caption("유의어: 등록된 정보 없음")
+    if ant:
+        st.write("**반의어:** " + ", ".join(ant))
+    else:
+        st.caption("반의어: 등록된 정보 없음")
+    st.caption("원본 CSV에는 유의어·반의어가 없어 일부 단어만 별도 제공됩니다. 문맥에 따라 의미가 달라질 수 있습니다.")
 
 
 def new_pack(data, level):
@@ -154,6 +158,11 @@ def new_pack(data, level):
     st.session_state.quiz_directions = ["EN → KO", "KO → EN"] * 10
     random.shuffle(st.session_state.quiz_directions)
     st.session_state.answer_key = 0
+    st.session_state.spell_idx = 0
+    st.session_state.spell_attempt = 0
+    st.session_state.spell_resolved = False
+    st.session_state.spell_results = {}
+    st.session_state.spell_key = 0
 
 
 def go(phase):
@@ -196,7 +205,7 @@ if not st.session_state.pack:
 if selected_level != st.session_state.pack_level:
     st.warning("현재 학습 중인 묶음은 이전에 선택한 수준입니다. 새로운 수준으로 바꾸려면 ‘새로운 20개 단어 시작’을 눌러 주세요.")
 
-phase = st.radio("학습 단계", ["Flashcards", "Quiz", "Review"], horizontal=True, key="phase")
+phase = st.radio("학습 단계", ["Flashcards", "Quiz", "Spelling", "Review"], horizontal=True, key="phase")
 pack = st.session_state.pack
 
 if phase == "Flashcards":
@@ -290,37 +299,101 @@ elif phase == "Quiz":
                         st.session_state.quiz_resolved = True
                     st.rerun()
 
-else:
-    results = st.session_state.results
-    if not results:
-        st.info("아직 퀴즈 기록이 없습니다. Quiz를 먼저 풀어 주세요.")
-        if st.button("Quiz로 이동", type="primary"):
-            go("Quiz")
+
+elif phase == "Spelling":
+    idx = st.session_state.spell_idx
+    if idx >= len(pack):
+        st.success("20개 단어 철자 연습을 마쳤어요!")
+        first = sum(r["mistakes"] == 0 for r in st.session_state.spell_results.values())
+        st.metric("첫 시도 철자 정답", f"{first} / {len(pack)}")
+        if st.button("🔍 틀린 단어만 복습하기", type="primary", use_container_width=True):
+            go("Review")
     else:
-        wrong = [(i, r) for i, r in results.items() if r["mistakes"] > 0]
-        perfect = sum(1 for r in results.values() if r["mistakes"] == 0)
-        c1, c2, c3 = st.columns(3)
-        c1.metric("풀이 완료", f"{len(results)} / 20")
-        c2.metric("첫 시도 정답", perfect)
-        c3.metric("복습할 단어", len(wrong))
-        st.caption("한 번이라도 틀린 단어는 복습 대상으로 표시합니다.")
+        item = pack[idx]
+        st.progress((idx + 1) / len(pack), text=f"Spelling {idx + 1} / {len(pack)}")
+        st.markdown(f'<div class="wp-card"><div class="wp-meaning">{html.escape(item["meaning"])}</div><p>영어 철자를 직접 입력하세요.</p></div>', unsafe_allow_html=True)
+        if st.session_state.spell_attempt == 1 and not st.session_state.spell_resolved:
+            st.warning(f'💡 힌트: 첫 글자 {item["word"][:1].upper()} · 글자 수 {len(item["word"])} — 다시 입력하세요!')
+        if st.session_state.spell_resolved:
+            result = st.session_state.spell_results[idx]
+            if result["mistakes"] == 0:
+                st.success("첫 번째 시도에 정답!")
+            elif result["mistakes"] == 1:
+                st.warning("힌트 후 정답! Review에 표시됩니다.")
+            else:
+                st.error("두 번 틀렸어요. Review에서 다시 공부해요.")
+            st.write(f'**정답:** {item["word"]} — {item["meaning"]}')
+            relation_block(item["word"])
+            if st.button("다음 철자 →" if idx < 19 else "연습 결과 →", type="primary", use_container_width=True):
+                st.session_state.spell_idx += 1
+                st.session_state.spell_attempt = 0
+                st.session_state.spell_resolved = False
+                st.session_state.spell_key += 1
+                st.rerun()
+        else:
+            with st.form(key=f'spelling_{st.session_state.spell_key}'):
+                answer = st.text_input("영어 철자", placeholder="영어 단어를 입력하세요", autocomplete="off")
+                submitted = st.form_submit_button("철자 확인", type="primary", use_container_width=True)
+            if submitted:
+                if not answer.strip():
+                    st.warning("철자를 입력해 주세요.")
+                elif clean(answer) == clean(item["word"]):
+                    st.session_state.spell_results[idx] = {"mistakes": st.session_state.spell_attempt, "direction": "Spelling"}
+                    st.session_state.spell_resolved = True
+                    st.rerun()
+                elif st.session_state.spell_attempt == 0:
+                    st.session_state.spell_attempt = 1
+                    st.rerun()
+                else:
+                    st.session_state.spell_results[idx] = {"mistakes": 2, "direction": "Spelling"}
+                    st.session_state.spell_resolved = True
+                    st.rerun()
+
+else:
+    quiz_results = st.session_state.results
+    spell_results = st.session_state.spell_results
+    wrong = []
+    for i, item in enumerate(pack):
+        mistakes = []
+        if i in quiz_results and quiz_results[i]["mistakes"] > 0:
+            mistakes.append(("Quiz", quiz_results[i]["mistakes"]))
+        if i in spell_results and spell_results[i]["mistakes"] > 0:
+            mistakes.append(("Spelling", spell_results[i]["mistakes"]))
+        if mistakes:
+            wrong.append((i, mistakes))
+    if not quiz_results and not spell_results:
+        st.info("아직 학습 기록이 없습니다. Quiz 또는 Spelling을 먼저 풀어 주세요.")
+    else:
+        st.metric("틀린 단어", len(wrong))
+        st.caption("Quiz나 Spelling에서 한 번이라도 틀린 단어만 표시합니다. 맞힌 단어는 나타나지 않습니다.")
         if not wrong:
             st.success("지금까지 틀린 단어가 없어요! 🎉")
-        for i, r in sorted(wrong, key=lambda pair: -pair[1]["mistakes"]):
+        for i, mistakes in sorted(wrong, key=lambda pair: -max(x[1] for x in pair[1])):
             item = pack[i]
-            if r["mistakes"] >= 2:
-                st.markdown(f'<div class="wp-error"><strong>🔴 집중 복습 · 2차 오답</strong><br><strong>{html.escape(item["word"])}</strong> — {html.escape(item["meaning"])}<br><small>문제 유형: {html.escape(r["direction"])}</small></div>', unsafe_allow_html=True)
-            else:
-                st.markdown(f'<div class="wp-warn"><strong>🟠 복습 필요 · 힌트 후 정답</strong><br><strong>{html.escape(item["word"])}</strong> — {html.escape(item["meaning"])}<br><small>문제 유형: {html.escape(r["direction"])}</small></div>', unsafe_allow_html=True)
+            twice = any(n >= 2 for _, n in mistakes)
+            category = "wp-error" if twice else "wp-warn"
+            status = "🔴 집중 복습" if twice else "🟠 복습 필요"
+            sources = ", ".join(f"{mode} {n}회 오답" for mode, n in mistakes)
+            st.markdown(f'<div class="{category}"><strong>{status}</strong><br><strong>{html.escape(item["word"])}</strong> — {html.escape(item["meaning"])}<br><small>{html.escape(sources)}</small></div>', unsafe_allow_html=True)
             relation_block(item["word"])
-        if st.button("🔁 같은 20개 단어 퀴즈 다시 풀기", use_container_width=True):
-            st.session_state.quiz_idx = 0
-            st.session_state.quiz_attempt = 0
-            st.session_state.quiz_resolved = False
-            st.session_state.quiz_feedback = ""
-            st.session_state.results = {}
-            st.session_state.answer_key += 1
-            go("Quiz")
+        a, b = st.columns(2)
+        with a:
+            if st.button("🔁 Quiz 다시 풀기", use_container_width=True):
+                st.session_state.quiz_idx = 0
+                st.session_state.quiz_attempt = 0
+                st.session_state.quiz_resolved = False
+                st.session_state.quiz_feedback = ""
+                st.session_state.results = {}
+                st.session_state.answer_key += 1
+                go("Quiz")
+        with b:
+            if st.button("🔁 Spelling 다시 하기", use_container_width=True):
+                st.session_state.spell_idx = 0
+                st.session_state.spell_attempt = 0
+                st.session_state.spell_resolved = False
+                st.session_state.spell_results = {}
+                st.session_state.spell_key += 1
+                go("Spelling")
 
 st.divider()
 st.caption("Word Passport · CSV 기반 3,000개 단어 · 학습 결과는 현재 브라우저 세션에서만 유지됩니다.")
