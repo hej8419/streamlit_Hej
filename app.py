@@ -167,8 +167,50 @@ st.markdown("""<style>
 .meaning{font-size:clamp(20px,4vw,28px);font-weight:650}
 .sentence{border:1px solid #8b98a8;border-radius:12px;padding:14px;margin:10px 0}
 .english{font-size:1.1rem;line-height:1.75}.translation{color:#68798d;font-size:.94rem;margin-top:5px}
-.blank{color:#b45309;font-weight:800}
+.blank{color:#b45309}
+/* Five-stage journey */
+.step-track{display:flex;gap:7px;flex-wrap:wrap;margin:12px 0}
+.step-pill{padding:9px 12px;border-radius:22px;font-size:.82rem;font-weight:650}
+.step-pill.active{background:#cf6a9c;color:white;box-shadow:0 4px 12px #db9bbb66}
+.step-pill.done{background:#f7d4e4;color:#81405f}
+.step-pill.future{background:#fff9fc;color:#aa91a0;border:1px solid #f3d6e4}
+/* Cherry blossom theme: all effects stay behind learning content. */
+.stApp{background:linear-gradient(145deg,#fff7fb 0%,#fff0f6 50%,#fffafc 100%);color:#59364b}
+[data-testid="stSidebar"]{background:#ffedf5}
+[data-testid="stSidebar"] *{color:#713e59}
+h1,h2,h3{color:#8c3d67!important}
+.hero{background:linear-gradient(120deg,#c85b91,#f5a7c8);box-shadow:0 10px 28px #cf7ea33b}
+.hero h1{color:#fff!important}.hero p{color:#fff4f8}
+.flash{background:#fff9fc;border:1px solid #f1b8d2;box-shadow:0 8px 20px #eeb0cd33}
+.sentence{background:#fffafd;border-color:#f0bad3}
+.translation{color:#855e73}
+.blank{color:#b64b84}
+.stButton>button[kind="primary"]{background:#c85b91;border-color:#c85b91}
+.stButton>button[kind="primary"]:hover{background:#ad477b;border-color:#ad477b}
+.petal-field{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden}
+.petal{position:absolute;top:-12vh;left:var(--x);font-size:var(--size);opacity:.4;animation:petal-fall var(--duration) linear infinite;animation-delay:var(--delay);filter:blur(.15px)}
+@keyframes petal-fall{0%{transform:translate3d(0,-10vh,0) rotate(0deg)}100%{transform:translate3d(var(--drift),115vh,0) rotate(540deg)}}
+@media(prefers-reduced-motion:reduce){.petal{animation:none;display:none}}
+[data-testid="stMainBlockContainer"], [data-testid="stSidebarContent"]{position:relative;z-index:1}
 </style>""", unsafe_allow_html=True)
+
+# Static, lightweight CSS animation: no JavaScript, network assets or image files.
+PETALS = [
+    ("5%", "15s", "-5s", "36px", "18px"),
+    ("15%", "21s", "-13s", "-42px", "15px"),
+    ("28%", "18s", "-7s", "55px", "22px"),
+    ("40%", "24s", "-19s", "-30px", "16px"),
+    ("52%", "17s", "-10s", "48px", "19px"),
+    ("64%", "22s", "-3s", "-58px", "14px"),
+    ("77%", "20s", "-16s", "40px", "20px"),
+    ("91%", "25s", "-9s", "-35px", "17px"),
+]
+petal_markup = "".join(
+    f'<span class="petal" style="--x:{x};--duration:{duration};'
+    f'--delay:{delay};--drift:{drift};--size:{size}">🌸</span>'
+    for x, duration, delay, drift, size in PETALS
+)
+st.markdown(f'<div class="petal-field" aria-hidden="true">{petal_markup}</div>', unsafe_allow_html=True)
 
 
 @st.cache_data(show_spinner=False)
@@ -210,7 +252,7 @@ def initialize_pack(df, level):
     ]
     st.session_state.update(
         pack=items, level=level, phase="Flashcards",
-        card_idx=0, revealed=False,
+        card_idx=0, revealed=False, flash_seen=set(),
         quiz_idx=0, quiz_tries=0, quiz_done=False, quiz_results={},
         spelling_idx=0, spelling_tries=0, spelling_done=False, spelling_results={},
         input_version=st.session_state.get("input_version", 0) + 1,
@@ -245,10 +287,6 @@ def navigate(phase):
     st.session_state.phase = phase
     st.session_state.pop("_phase_choice", None)
     st.rerun()
-
-
-def sync_phase():
-    st.session_state.phase = st.session_state._phase_choice
 
 
 @st.cache_data(show_spinner=False, max_entries=300)
@@ -335,7 +373,9 @@ def answer_form(stage, index, prompt, answer, meaning, korean_answer=False):
     tries_key = f"{stage}_tries"
     done_key = f"{stage}_done"
     st.markdown(prompt)
+    nickname = st.session_state.get("nickname", "학습자")
     if st.session_state[tries_key] == 1 and not st.session_state[done_key]:
+        st.info(f"🌷 {nickname}님, 아직 한 번 더 기회가 있어요! 힌트를 보고 다시 도전해 봐요.")
         if korean_answer:
             st.warning(f"💡 힌트: 한국어 뜻의 첫 글자는 **{meaning[:1]}**입니다.")
         else:
@@ -345,9 +385,9 @@ def answer_form(stage, index, prompt, answer, meaning, korean_answer=False):
         if mistakes == 0:
             st.success("첫 번째 시도에 정답!")
         elif mistakes == 1:
-            st.warning("힌트 후 정답! Review에 추가되었습니다.")
+            st.success(f"🌸 {nickname}님, 다시 도전해서 맞혔어요! Review에서도 복습해 봐요.")
         else:
-            st.error("두 번 틀렸습니다. Review에서 복습하세요.")
+            st.info(f"🌱 {nickname}님, 틀린 단어는 배울 기회예요. 정답을 확인하고 Review에서 다시 만나 봐요!")
         st.write(f"**정답:** {answer} — {meaning}")
         if st.button("다음 문제 →", key=f"next_{stage}_{index}", type="primary"):
             st.session_state[f"{stage}_idx"] += 1
@@ -463,7 +503,30 @@ except Exception as exc:
     st.error(f"vocabulary.csv를 불러올 수 없습니다: {exc}")
     st.stop()
 
-st.markdown('<div class="hero"><h1>📚 Word Passport</h1><p>3,000개 단어 · 수준 진단 · 플래시카드 · 퀴즈 · 스펠링 · 여행 독해 · 리뷰</p></div>', unsafe_allow_html=True)
+st.markdown('<div class="hero"><h1>🌸 Word Passport</h1><p>3,000개 단어 · 수준 진단 · 플래시카드 · 퀴즈 · 스펠링 · 여행 독해 · 리뷰</p></div>', unsafe_allow_html=True)
+
+# The nickname is intentionally session-only: no account or personal data collection.
+### `app.py` 전체 코드 — 이어지는 마지막 부분
+
+아래 코드는 위 코드의 마지막 `# The nickname is intentionally session-only...` 주석 바로 다음에 이어지는 내용이야.
+
+<CodeBlock language="python" editable>
+if not st.session_state.get("nickname"):
+    st.subheader("🌷 나만의 Word Passport 만들기")
+    st.write("처음 오셨군요! 학습할 때 불리고 싶은 별명을 입력해 주세요.")
+    with st.form("nickname_welcome"):
+        entered_nickname = st.text_input("별명", max_chars=20, placeholder="예: Cherry")
+        start = st.form_submit_button("🌸 학습 시작하기", type="primary")
+    if start:
+        clean_nickname = entered_nickname.strip()
+        if clean_nickname:
+            st.session_state.nickname = clean_nickname
+            st.rerun()
+        else:
+            st.warning("별명을 입력해 주세요.")
+    st.stop()
+
+st.caption(f"🌸 {st.session_state.nickname}님의 Word Passport에 오신 걸 환영해요!")
 if "pack" not in st.session_state:
     st.session_state.pack = []
 if "reading_items" not in st.session_state:
@@ -473,7 +536,16 @@ if "menu_page" not in st.session_state:
 
 MENU = ["🧭 수준 진단", "1. 초등", "2. 중등", "3. 고등"]
 with st.sidebar:
-    st.title("📚 Word Passport")
+    st.title("🌸 Word Passport")
+    st.caption(f"안녕하세요, {st.session_state.nickname}님!")
+    with st.expander("별명 변경"):
+        changed_nickname = st.text_input("새 별명", value=st.session_state.nickname, max_chars=20, key="new_nickname")
+        if st.button("별명 저장"):
+            if changed_nickname.strip():
+                st.session_state.nickname = changed_nickname.strip()
+                st.rerun()
+            else:
+                st.warning("별명을 입력해 주세요.")
     st.caption("학습 메뉴")
     selected_page = st.radio("이동할 페이지", MENU, key="menu_page", label_visibility="collapsed")
     st.divider()
@@ -524,13 +596,34 @@ if st.button("🔄 이 수준에서 새 단어 20개 뽑기"):
     st.rerun()
 
 phases = ["Flashcards", "Quiz", "Spelling", "Reading", "Review"]
-if st.session_state.get("phase") not in phases:
-    st.session_state.phase = "Flashcards"
-phase = st.radio(
-    "학습 단계", phases, horizontal=True,
-    index=phases.index(st.session_state.phase),
-    key="_phase_choice", on_change=sync_phase
+phase = st.session_state.get("phase", "Flashcards")
+if phase not in phases:
+    phase = "Flashcards"
+    st.session_state.phase = phase
+
+# 단계는 진행 표시로 보여 주고, 이동은 학습 화면 하단 버튼으로 합니다.
+step = phases.index(phase)
+step_labels = ["① Flashcards", "② Quiz", "③ Spelling", "④ Reading", "⑤ Review"]
+st.markdown(
+    '<div class="step-track">' + ''.join(
+        f'<div class="step-pill {"active" if i == step else "done" if i < step else "future"}">{label}</div>'
+        for i, label in enumerate(step_labels)
+    ) + '</div>',
+    unsafe_allow_html=True,
 )
+st.progress((step + 1) / len(phases), text=f"학습 여정 {step + 1}/5 · {phase}")
+
+# 이전에 공부한 단계로 돌아갈 수 있습니다. Review도 언제든 확인할 수 있습니다.
+with st.expander("📖 이전 단계 복습 / 오답 Review 바로가기"):
+    if st.button("🔁 오답 Review 열기", key="review_shortcut"):
+        navigate("Review")
+    for old in phases[:step]:
+        if st.button(f"↩ {old} 다시 보기", key=f"back_{old}"):
+            navigate(old)
+    if phase == "Review":
+        for old in phases[:-1]:
+            if st.button(f"↩ {old} 복습", key=f"review_back_{old}"):
+                navigate(old)
 
 if phase == "Reading":
     if not st.session_state.reading_items:
@@ -556,6 +649,7 @@ if phase == "Reading":
 
 if phase == "Flashcards":
     idx = st.session_state.card_idx
+    st.session_state.setdefault("flash_seen", set()).add(idx)
     item = pack[idx]
     st.progress((idx + 1) / count, text=f"Flashcard {idx + 1}/{count}")
     word = html.escape(item["word"])
@@ -585,8 +679,14 @@ if phase == "Flashcards":
             st.session_state.card_idx += 1
             st.session_state.revealed = False
             st.rerun()
-    if st.button("다음 단계: Quiz →", type="primary", use_container_width=True):
-        navigate("Quiz")
+    viewed = len(st.session_state.flash_seen)
+    st.caption(f"살펴본 카드: {viewed}/{count}개")
+    if viewed == count:
+        st.success(f"🌸 {st.session_state.nickname}님, 단어 {count}개를 모두 살펴봤어요! 이제 기억나는 단어를 확인해 볼까요? 틀려도 괜찮아요.")
+        if st.button("🌷 Quiz 시작하기 →", type="primary", use_container_width=True):
+            navigate("Quiz")
+    else:
+        st.info("🌱 카드를 모두 살펴보면 Quiz 시작 버튼이 나타나요. 이전 카드는 언제든 다시 볼 수 있어요.")
 
 elif phase == "Quiz":
     idx = st.session_state.quiz_idx
