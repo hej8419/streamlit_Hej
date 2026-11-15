@@ -55,7 +55,8 @@ RELATED = {
     "compensate": (["reimburse"], []),
 }
 
-# 각 문장은 (영어, 한국어) 형태입니다. {{word}}는 플래시카드 및 빈칸 문제로 연결됩니다.
+# 각 문장은 (영어, 한국어) 형태입니다.
+# {{word}}는 플래시카드 및 빈칸 문제로 연결됩니다.
 # 해당 수준의 vocabulary.csv에 실제 존재하는 단어만 목표 어휘로 사용합니다.
 PASSAGES = {
     "Elementary": [
@@ -167,7 +168,7 @@ st.markdown("""<style>
 .meaning{font-size:clamp(20px,4vw,28px);font-weight:650}
 .sentence{border:1px solid #8b98a8;border-radius:12px;padding:14px;margin:10px 0}
 .english{font-size:1.1rem;line-height:1.75}.translation{color:#68798d;font-size:.94rem;margin-top:5px}
-.blank{color:#b45309}
+.blank{color:#b45309;font-weight:800}
 /* Five-stage journey */
 .step-track{display:flex;gap:7px;flex-wrap:wrap;margin:12px 0}
 .step-pill{padding:9px 12px;border-radius:22px;font-size:.82rem;font-weight:650}
@@ -506,11 +507,6 @@ except Exception as exc:
 st.markdown('<div class="hero"><h1>🌸 Word Passport</h1><p>3,000개 단어 · 수준 진단 · 플래시카드 · 퀴즈 · 스펠링 · 여행 독해 · 리뷰</p></div>', unsafe_allow_html=True)
 
 # The nickname is intentionally session-only: no account or personal data collection.
-### `app.py` 전체 코드 — 이어지는 마지막 부분
-
-아래 코드는 위 코드의 마지막 `# The nickname is intentionally session-only...` 주석 바로 다음에 이어지는 내용이야.
-
-<CodeBlock language="python" editable>
 if not st.session_state.get("nickname"):
     st.subheader("🌷 나만의 Word Passport 만들기")
     st.write("처음 오셨군요! 학습할 때 불리고 싶은 별명을 입력해 주세요.")
